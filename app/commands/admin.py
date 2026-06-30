@@ -6,12 +6,18 @@ from datetime import datetime
 import discord
 from discord import app_commands
 from discord.ext import commands
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.database import Database
 from app.mention_safety import sanitize_mentions
-from app.models import ChannelRoute, GuildUsageMonthly
+from app.models import (
+    ChannelRoute,
+    GuildUsageMonthly,
+    TranslationChannelSetting,
+    UserLanguageSetting,
+)
 from app.services.language_service import LanguageService
+from app.services.on_demand_translation_service import OnDemandTranslationService
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError
 from app.translation.output_cleaner import clean_translation_output
@@ -27,12 +33,199 @@ class AdminCommands(commands.Cog):
         webhook_service: WebhookService,
         max_message_chars: int,
         skip_messages_over_limit: bool,
+        legacy_mirror_mode_enabled: bool,
+        on_demand_channel_translation_enabled: bool,
+        reaction_translation_enabled: bool,
+        context_menu_translation_enabled: bool,
+        reaction_translate_emoji: str,
+        default_monthly_char_limit: int,
     ) -> None:
         self.database = database
         self.translation_provider = translation_provider
         self.webhook_service = webhook_service
         self.max_message_chars = max_message_chars
         self.skip_messages_over_limit = skip_messages_over_limit
+        self.legacy_mirror_mode_enabled = legacy_mirror_mode_enabled
+        self.on_demand_channel_translation_enabled = on_demand_channel_translation_enabled
+        self.reaction_translation_enabled = reaction_translation_enabled
+        self.context_menu_translation_enabled = context_menu_translation_enabled
+        self.reaction_translate_emoji = reaction_translate_emoji
+        self.default_monthly_char_limit = default_monthly_char_limit
+
+    @app_commands.command(name="set_language", description="Set your translation target language")
+    @app_commands.guild_only()
+    async def set_language(self, interaction: discord.Interaction, target_language: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        language = LanguageService.normalize(target_language)
+        if not LanguageService.validate(language):
+            await interaction.response.send_message("Target language must look like `ru`, `en`, or `pt-br`.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            result = await session.execute(
+                select(UserLanguageSetting).where(
+                    UserLanguageSetting.guild_id == interaction.guild.id,
+                    UserLanguageSetting.user_id == interaction.user.id,
+                )
+            )
+            setting = result.scalar_one_or_none()
+            if setting is None:
+                session.add(
+                    UserLanguageSetting(
+                        guild_id=interaction.guild.id,
+                        user_id=interaction.user.id,
+                        target_language=language,
+                    )
+                )
+            else:
+                setting.target_language = language
+            await session.commit()
+
+        await interaction.response.send_message(f"Your translation language is now `{language}`.", ephemeral=True)
+
+    @app_commands.command(name="my_language", description="Show your configured translation language")
+    @app_commands.guild_only()
+    async def my_language(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            result = await session.execute(
+                select(UserLanguageSetting.target_language).where(
+                    UserLanguageSetting.guild_id == interaction.guild.id,
+                    UserLanguageSetting.user_id == interaction.user.id,
+                )
+            )
+            language = result.scalar_one_or_none()
+
+        if language is None:
+            await interaction.response.send_message("No language set. Use `/set_language target_language:ru`.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Your translation language is `{language}`.", ephemeral=True)
+
+    @app_commands.command(name="translation_channel_set", description="Set a language-specific translation channel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def translation_channel_set(
+        self,
+        interaction: discord.Interaction,
+        target_language: str,
+        channel: discord.TextChannel,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        language = LanguageService.normalize(target_language)
+        if not LanguageService.validate(language):
+            await interaction.response.send_message("Target language must look like `ru`, `en`, or `pt-br`.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            result = await session.execute(
+                select(TranslationChannelSetting).where(
+                    TranslationChannelSetting.guild_id == interaction.guild.id,
+                    TranslationChannelSetting.target_language == language,
+                )
+            )
+            setting = result.scalar_one_or_none()
+            if setting is None:
+                session.add(
+                    TranslationChannelSetting(
+                        guild_id=interaction.guild.id,
+                        target_language=language,
+                        channel_id=channel.id,
+                    )
+                )
+            else:
+                setting.channel_id = channel.id
+            await session.commit()
+
+        await interaction.response.send_message(
+            f"Translations for `{language}` will be posted to {channel.mention}.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="translation_channel_list", description="List language-specific translation channels")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def translation_channel_list(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            result = await session.execute(
+                select(TranslationChannelSetting).where(TranslationChannelSetting.guild_id == interaction.guild.id)
+            )
+            settings = result.scalars().all()
+
+        if not settings:
+            await interaction.response.send_message("No translation channels configured.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "\n".join(f"`{setting.target_language}` -> <#{setting.channel_id}>" for setting in settings),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="translation_channel_remove", description="Remove a language translation channel")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def translation_channel_remove(self, interaction: discord.Interaction, target_language: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        language = LanguageService.normalize(target_language)
+        async with self.database.session() as session:
+            result = await session.execute(
+                delete(TranslationChannelSetting).where(
+                    TranslationChannelSetting.guild_id == interaction.guild.id,
+                    TranslationChannelSetting.target_language == language,
+                )
+            )
+            await session.commit()
+
+        await interaction.response.send_message(
+            f"Removed {result.rowcount or 0} translation channel setting(s) for `{language}`.",
+            ephemeral=True,
+        )
+
+    @app_commands.context_menu(name="Translate")
+    @app_commands.guild_only()
+    async def translate_context_menu(self, interaction: discord.Interaction, message: discord.Message) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not self.on_demand_channel_translation_enabled or not self.context_menu_translation_enabled:
+            await interaction.response.send_message("On-demand translation is disabled.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        async with self.database.session() as session:
+            service = self._on_demand_service(session)
+            result = await service.publish_for_user(message, interaction.user.id)
+
+        if result.status == "posted":
+            await interaction.followup.send(f"Translation posted to <#{result.target_channel_id}>.", ephemeral=True)
+        elif result.status == "duplicate":
+            await interaction.followup.send(f"Already translated in <#{result.target_channel_id}>.", ephemeral=True)
+        elif result.status == "missing_language":
+            await interaction.followup.send("Set your language first with `/set_language target_language:ru`.", ephemeral=True)
+        elif result.status == "missing_channel":
+            await interaction.followup.send(
+                f"No translation channel configured for `{result.target_language}`.",
+                ephemeral=True,
+            )
+        elif result.status == "empty_message":
+            await interaction.followup.send("That message has no text to translate.", ephemeral=True)
+        else:
+            await interaction.followup.send("Translation could not be posted.", ephemeral=True)
 
     @app_commands.command(name="translate_setup", description="Create or update a translation mirror route")
     @app_commands.guild_only()
@@ -193,6 +386,12 @@ class AdminCommands(commands.Cog):
                 )
             )
             route_count = count_result.scalar_one()
+            channel_count_result = await session.execute(
+                select(func.count(TranslationChannelSetting.id)).where(
+                    TranslationChannelSetting.guild_id == interaction.guild.id,
+                )
+            )
+            translation_channel_count = channel_count_result.scalar_one()
             usage_result = await session.execute(
                 select(GuildUsageMonthly).where(
                     GuildUsageMonthly.guild_id == interaction.guild.id,
@@ -207,9 +406,15 @@ class AdminCommands(commands.Cog):
             "\n".join(
                 [
                     "Translation Mirror Bot is running.",
+                    f"Legacy mirror mode enabled: `{'yes' if self.legacy_mirror_mode_enabled else 'no'}`",
+                    f"On-demand channel translation enabled: `{'yes' if self.on_demand_channel_translation_enabled else 'no'}`",
+                    f"Reaction translation enabled: `{'yes' if self.reaction_translation_enabled else 'no'}`",
+                    f"Reaction emoji: `{self.reaction_translate_emoji}`",
+                    f"Context menu enabled: `{'yes' if self.context_menu_translation_enabled else 'no'}`",
                     f"Provider: `{self.translation_provider.name}`",
                     f"Model: `{self._provider_model()}`",
-                    f"Active routes: `{route_count}`",
+                    f"Active legacy routes: `{route_count}`",
+                    f"Configured translation channels: `{translation_channel_count}`",
                     f"Monthly input tokens: `{usage.input_tokens_used if usage else 0}`",
                     f"Monthly output tokens: `{usage.output_tokens_used if usage else 0}`",
                     f"Monthly character count: `{usage.characters_used if usage else 0}`",
@@ -266,6 +471,13 @@ class AdminCommands(commands.Cog):
 
     def _provider_model(self) -> str:
         return self.translation_provider.model_name or self.translation_provider.name
+
+    def _on_demand_service(self, session) -> OnDemandTranslationService:
+        service = OnDemandTranslationService(session, self.translation_provider, self.webhook_service)
+        service.max_message_chars = self.max_message_chars
+        service.skip_messages_over_limit = self.skip_messages_over_limit
+        service.default_monthly_char_limit = self.default_monthly_char_limit
+        return service
 
     async def cog_app_command_error(
         self,

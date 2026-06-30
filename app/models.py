@@ -55,6 +55,52 @@ class MessageMapping(TimestampMixin, Base):
     original_message_url: Mapped[str] = mapped_column(String(512), nullable=False)
 
 
+class UserLanguageSetting(TimestampMixin, Base):
+    __tablename__ = "user_language_settings"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "user_id", name="uq_user_language_setting"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class TranslationChannelSetting(TimestampMixin, Base):
+    __tablename__ = "translation_channel_settings"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "target_language", name="uq_translation_channel_setting"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class OnDemandTranslationMapping(TimestampMixin, Base):
+    __tablename__ = "on_demand_translation_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "guild_id",
+            "original_message_id",
+            "target_language",
+            name="uq_on_demand_original_language",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    original_message_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    original_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    translated_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    original_message_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class TranslationCache(Base):
     __tablename__ = "translation_cache"
     __table_args__ = (

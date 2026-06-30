@@ -1,15 +1,18 @@
 # Discord Translation Mirror Bot
 
-An MVP Discord bot that relays messages from configured source channels into language-specific mirror channels. It supports a local mock provider for development plus OpenAI and Gemini providers for real AI-style translation.
+An MVP Discord bot that translates Discord messages on demand into configured language-specific translation channels. It supports a local mock provider for development plus OpenAI and Gemini providers for real AI-style translation. Legacy always-on mirror mode is still present, but disabled by default.
 
-Example:
+Example on-demand flow:
 
 ```text
-[ru] Hello everyone
+Admin: /translation_channel_set ru #ru-translation
+User:  /set_language ru
+User reacts 🌐 to a message in #global-chat
 
-——
-🌐 Translated to: ru
-🔗 Original: <https://discord.com/channels/{guild_id}/{source_channel_id}/{message_id}>
+Bot posts in #ru-translation:
+Привет всем
+
+[Original](https://discord.com/channels/{guild_id}/{source_channel_id}/{message_id})
 ```
 
 ## Setup
@@ -29,6 +32,16 @@ copy .env.example .env
 ```
 
 Set `DISCORD_BOT_TOKEN` in `.env`.
+
+The default product mode is on-demand channel translation:
+
+```env
+ON_DEMAND_CHANNEL_TRANSLATION_ENABLED=true
+REACTION_TRANSLATION_ENABLED=true
+CONTEXT_MENU_TRANSLATION_ENABLED=true
+LEGACY_MIRROR_MODE_ENABLED=false
+REACTION_TRANSLATE_EMOJI=🌐
+```
 
 For mock local development, keep:
 
@@ -97,30 +110,59 @@ In the Discord Developer Portal:
    - View Channels
    - Read Message History
    - Send Messages
-   - Manage Webhooks
+   - Add Reactions if feedback reactions are enabled later
+   - Manage Webhooks only for legacy mirror mode
    - Use Slash Commands
 
 ## Slash Commands
 
+- `/set_language target_language`
+  Sets your personal target language for on-demand translation.
+- `/my_language`
+  Shows your configured target language.
+- `/translation_channel_set target_language channel`
+  Admin command that maps a language to a translation channel.
+- `/translation_channel_list`
+  Admin command that lists configured language channels.
+- `/translation_channel_remove target_language`
+  Admin command that removes a language channel mapping.
 - `/translate_setup source_channel target_channel target_language`
-  Creates or updates a route and creates or reuses a webhook in the target channel.
+  Legacy mirror command. Creates or updates a source-channel mirror route when `LEGACY_MIRROR_MODE_ENABLED=true`.
 - `/translate_list`
-  Lists active routes for the current server.
+  Lists active legacy mirror routes for the current server.
 - `/translate_remove source_channel target_language`
-  Disables the matching active route.
+  Disables matching legacy mirror routes.
 - `/translate_status`
-  Shows provider, model, active route count, monthly token counts, monthly character count, and database status.
+  Shows feature flags, provider, model, configured channel count, monthly token counts, monthly character count, and database status.
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
+
+## User Flow
+
+1. An admin configures language channels:
+
+```text
+/translation_channel_set ru #ru-translation
+/translation_channel_set en #en-translation
+```
+
+2. A user sets their language:
+
+```text
+/set_language ru
+```
+
+3. The user reacts with `🌐` to any message the bot can read.
+4. The bot posts the translation to the configured channel for that language.
+5. Users can also use the message context menu: Apps -> Translate.
 
 ## MVP Limitations
 
 - Supported providers are `mock`, `openai`, and `gemini`.
 - DeepL remains a placeholder for future work.
-- Message edits and deletes are not mirrored yet.
-- Attachments, embeds, stickers, and replies are not mirrored yet.
+- Attachments, embeds, stickers, and replies are not translated yet.
 - Messages over `MAX_MESSAGE_CHARS` are skipped when `SKIP_MESSAGES_OVER_LIMIT=true`.
 - Translation cache keys include source text hash, target language, provider, and model.
-- Webhook messages use `allowed_mentions` with no parsing so mirrored `@everyone`, `@here`, user, and role mentions do not ping.
-- Translated text is also sanitized so mention tokens are visually broken before sending.
+- Translated text is sanitized so mention tokens are visually broken before sending.
+- Translated posts use `allowed_mentions` with no parsing so `@everyone`, `@here`, user, and role mentions do not ping.
 - Logs include IDs and operational events, but not full user message content.

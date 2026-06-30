@@ -9,6 +9,7 @@ from discord.ext import commands
 from app.commands.admin import AdminCommands
 from app.config import Settings, configure_logging, load_settings
 from app.database import Database
+from app.services.on_demand_translation_service import OnDemandTranslationService
 from app.services.relay_service import RelayService
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider
@@ -61,6 +62,12 @@ class TranslationMirrorBot(commands.Bot):
                 self.webhook_service,
                 max_message_chars=self.settings.max_message_chars,
                 skip_messages_over_limit=self.settings.skip_messages_over_limit,
+                legacy_mirror_mode_enabled=self.settings.legacy_mirror_mode_enabled,
+                on_demand_channel_translation_enabled=self.settings.on_demand_channel_translation_enabled,
+                reaction_translation_enabled=self.settings.reaction_translation_enabled,
+                context_menu_translation_enabled=self.settings.context_menu_translation_enabled,
+                reaction_translate_emoji=self.settings.reaction_translate_emoji,
+                default_monthly_char_limit=self.settings.default_monthly_char_limit,
             )
         )
         synced = await self.tree.sync()
@@ -107,6 +114,9 @@ class TranslationMirrorBot(commands.Bot):
         if message.guild is None or message.author.bot or message.webhook_id is not None:
             return
 
+        if not self.settings.legacy_mirror_mode_enabled:
+            return
+
         async with self.database.session() as session:
             await self._relay_service(session).relay_message(message)
 
@@ -115,7 +125,10 @@ class TranslationMirrorBot(commands.Bot):
             return
 
         async with self.database.session() as session:
-            await self._relay_service(session).sync_edited_message(after)
+            if self.settings.on_demand_channel_translation_enabled:
+                await self._on_demand_service(session).sync_edited_message(after)
+            if self.settings.legacy_mirror_mode_enabled:
+                await self._relay_service(session).sync_edited_message(after)
 
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
         if payload.guild_id is None:
@@ -130,7 +143,62 @@ class TranslationMirrorBot(commands.Bot):
             return
 
         async with self.database.session() as session:
-            await self._relay_service(session).sync_deleted_message(guild, payload.message_id)
+            if self.settings.on_demand_channel_translation_enabled:
+                await self._on_demand_service(session).sync_deleted_message(guild, payload.message_id)
+            if self.settings.legacy_mirror_mode_enabled:
+                await self._relay_service(session).sync_deleted_message(guild, payload.message_id)
+
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if (
+            payload.guild_id is None
+            or payload.user_id == (self.user.id if self.user else None)
+            or str(payload.emoji) != self.settings.reaction_translate_emoji
+            or not self.settings.on_demand_channel_translation_enabled
+            or not self.settings.reaction_translation_enabled
+        ):
+            return
+
+        channel = self.get_channel(payload.channel_id)
+        if channel is None:
+            try:
+                channel = await self.fetch_channel(payload.channel_id)
+            except discord.DiscordException as exc:
+                logger.warning(
+                    "reaction_translation_channel_fetch_failed",
+                    extra={
+                        "guild_id": payload.guild_id,
+                        "channel_id": payload.channel_id,
+                        "message_id": payload.message_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except discord.DiscordException as exc:
+            logger.warning(
+                "reaction_translation_message_fetch_failed",
+                extra={
+                    "guild_id": payload.guild_id,
+                    "channel_id": payload.channel_id,
+                    "message_id": payload.message_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return
+
+        async with self.database.session() as session:
+            result = await self._on_demand_service(session).publish_for_user(message, payload.user_id)
+
+        if result.status == "missing_language" and self.settings.on_demand_setup_dm_fallback:
+            try:
+                user = self.get_user(payload.user_id) or await self.fetch_user(payload.user_id)
+                await user.send("Set your translation language in the server with `/set_language target_language:ru`.")
+            except discord.DiscordException:
+                pass
 
     def _relay_service(self, session) -> RelayService:
         relay_service = RelayService(session, self.translation_provider, self.webhook_service)
@@ -138,6 +206,13 @@ class TranslationMirrorBot(commands.Bot):
         relay_service.skip_messages_over_limit = self.settings.skip_messages_over_limit
         relay_service.default_monthly_char_limit = self.settings.default_monthly_char_limit
         return relay_service
+
+    def _on_demand_service(self, session) -> OnDemandTranslationService:
+        service = OnDemandTranslationService(session, self.translation_provider, self.webhook_service)
+        service.max_message_chars = self.settings.max_message_chars
+        service.skip_messages_over_limit = self.settings.skip_messages_over_limit
+        service.default_monthly_char_limit = self.settings.default_monthly_char_limit
+        return service
 
 
 def main() -> None:
@@ -148,6 +223,12 @@ def main() -> None:
         extra={
             "openai_api_key_present": "yes" if bool(settings.openai_api_key) else "no",
             "openai_translation_model": settings.openai_translation_model,
+            "legacy_mirror_mode_enabled": "yes" if settings.legacy_mirror_mode_enabled else "no",
+            "on_demand_channel_translation_enabled": "yes"
+            if settings.on_demand_channel_translation_enabled
+            else "no",
+            "reaction_translation_enabled": "yes" if settings.reaction_translation_enabled else "no",
+            "context_menu_translation_enabled": "yes" if settings.context_menu_translation_enabled else "no",
         },
     )
     bot = TranslationMirrorBot(settings)

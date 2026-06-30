@@ -20,6 +20,12 @@ class Settings:
     default_monthly_char_limit: int = 500_000
     max_message_chars: int = 1_500
     skip_messages_over_limit: bool = True
+    on_demand_channel_translation_enabled: bool = True
+    reaction_translation_enabled: bool = True
+    context_menu_translation_enabled: bool = True
+    legacy_mirror_mode_enabled: bool = False
+    reaction_translate_emoji: str = "🌐"
+    on_demand_setup_dm_fallback: bool = False
     log_level: str = "INFO"
 
 
@@ -45,6 +51,12 @@ def load_settings() -> Settings:
         default_monthly_char_limit=int(os.getenv("DEFAULT_MONTHLY_CHAR_LIMIT", "500000")),
         max_message_chars=int(os.getenv("MAX_MESSAGE_CHARS", "1500")),
         skip_messages_over_limit=parse_bool(os.getenv("SKIP_MESSAGES_OVER_LIMIT", "true")),
+        on_demand_channel_translation_enabled=parse_bool(os.getenv("ON_DEMAND_CHANNEL_TRANSLATION_ENABLED", "true")),
+        reaction_translation_enabled=parse_bool(os.getenv("REACTION_TRANSLATION_ENABLED", "true")),
+        context_menu_translation_enabled=parse_bool(os.getenv("CONTEXT_MENU_TRANSLATION_ENABLED", "true")),
+        legacy_mirror_mode_enabled=parse_bool(os.getenv("LEGACY_MIRROR_MODE_ENABLED", "false")),
+        reaction_translate_emoji=os.getenv("REACTION_TRANSLATE_EMOJI", "🌐").strip(),
+        on_demand_setup_dm_fallback=parse_bool(os.getenv("ON_DEMAND_SETUP_DM_FALLBACK", "false")),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
     )
 
