@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class ChannelRoute(TimestampMixin, Base):
+    __tablename__ = "channel_routes"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "source_channel_id", "target_language", name="uq_route_language"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    source_channel_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    target_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False)
+    webhook_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    webhook_token: Mapped[str] = mapped_column(String(256), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class MessageMapping(TimestampMixin, Base):
+    __tablename__ = "message_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    original_message_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    original_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    translated_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False)
+    original_message_url: Mapped[str] = mapped_column(String(512), nullable=False)
+
+
+class TranslationCache(Base):
+    __tablename__ = "translation_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_text_hash",
+            "target_language",
+            "provider",
+            "model",
+            name="uq_translation_cache_provider_model",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_text_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    source_language: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), default="mock", nullable=False)
+    model: Mapped[str] = mapped_column(String(128), default="mock", nullable=False)
+    translated_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class GuildUsageMonthly(TimestampMixin, Base):
+    __tablename__ = "guild_usage_monthly"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "month", "provider", "model", name="uq_guild_usage_month_provider_model"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    month: Mapped[str] = mapped_column(String(7), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), default="mock", nullable=False)
+    characters_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    input_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    output_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    monthly_limit: Mapped[int] = mapped_column(Integer, nullable=False)

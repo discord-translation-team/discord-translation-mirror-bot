@@ -1,0 +1,7 @@
+discord.py>=2.4,<3
+SQLAlchemy>=2.0,<3
+aiosqlite>=0.19,<1
+asyncpg>=0.29,<1
+python-dotenv>=1.0,<2
+google-genai>=1.0,<2
+openai>=1.0,<2
