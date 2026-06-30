@@ -77,6 +77,16 @@ python -m app.bot
 
 On startup the bot creates local SQLite tables when using the default `DATABASE_URL` and syncs slash commands.
 
+## Railway PostgreSQL
+
+For local development, `DATABASE_URL` can stay as:
+
+```env
+DATABASE_URL=sqlite+aiosqlite:///./bot.db
+```
+
+On Railway, attach a Railway PostgreSQL service and use the `DATABASE_URL` provided by Railway. If Railway provides a URL beginning with `postgresql://`, the bot converts it internally to `postgresql+asyncpg://` for SQLAlchemy async support. The bot never logs the full database URL or database password.
+
 ## Discord Invite Permissions
 
 In the Discord Developer Portal:

@@ -35,7 +35,7 @@ def load_settings() -> Settings:
 
     return Settings(
         discord_bot_token=token,
-        database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./bot.db").strip(),
+        database_url=normalize_database_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./bot.db").strip()),
         translation_provider=os.getenv("TRANSLATION_PROVIDER", "mock").strip().lower(),
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         gemini_translation_model=os.getenv("GEMINI_TRANSLATION_MODEL", "gemini-2.5-flash-lite").strip(),
@@ -47,6 +47,12 @@ def load_settings() -> Settings:
         skip_messages_over_limit=parse_bool(os.getenv("SKIP_MESSAGES_OVER_LIMIT", "true")),
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
     )
+
+
+def normalize_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return database_url
 
 
 class JsonFormatter(logging.Formatter):
