@@ -5,10 +5,10 @@ import logging
 from datetime import datetime
 
 import discord
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.mention_safety import sanitize_mentions
+from app.message_formatting import build_translated_message_body
 from app.models import ChannelRoute, GuildUsageMonthly, MessageMapping, TranslationCache
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError, TranslationResult
@@ -147,6 +147,156 @@ class RelayService:
             )
         return sent_count
 
+    async def sync_edited_message(self, message: discord.Message) -> int:
+        if message.guild is None or message.author.bot or message.webhook_id is not None:
+            return 0
+
+        source_char_count = len(message.content)
+        if self.skip_messages_over_limit and source_char_count > self.max_message_chars:
+            logger.warning(
+                "message_edit_translation_skipped_over_limit",
+                extra={
+                    "guild_id": message.guild.id,
+                    "source_channel_id": message.channel.id,
+                    "message_id": message.id,
+                    "message_chars": source_char_count,
+                    "max_message_chars": self.max_message_chars,
+                },
+            )
+            return 0
+
+        mappings = await self._message_mappings(message.guild.id, message.id)
+        edited_count = 0
+        for mapping in mappings:
+            route = await self._route_for_mapping(mapping)
+            if route is None:
+                logger.warning(
+                    "edit_sync_route_not_found",
+                    extra={
+                        "guild_id": mapping.guild_id,
+                        "mapping_id": mapping.id,
+                        "target_channel_id": mapping.target_channel_id,
+                        "target_language": mapping.target_language,
+                    },
+                )
+                continue
+
+            webhook = await self._webhook_for_route(message.guild, route)
+            if webhook is None:
+                logger.warning(
+                    "edit_sync_webhook_not_found",
+                    extra={"guild_id": route.guild_id, "route_id": route.id, "webhook_id": route.webhook_id},
+                )
+                continue
+
+            try:
+                translation = await self._translate_with_cache(message.content, mapping.target_language)
+                body = self._translated_body(translation.translated_text, mapping.original_message_url)
+                await webhook.edit_message(
+                    mapping.translated_message_id,
+                    content=body,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.NotFound:
+                logger.warning(
+                    "translated_message_missing_on_edit",
+                    extra={
+                        "guild_id": mapping.guild_id,
+                        "mapping_id": mapping.id,
+                        "translated_message_id": mapping.translated_message_id,
+                    },
+                )
+                continue
+            except TranslationProviderError as exc:
+                logger.error(
+                    "edit_translation_failed",
+                    extra={
+                        "guild_id": message.guild.id,
+                        "source_channel_id": message.channel.id,
+                        "message_id": message.id,
+                        "mapping_id": mapping.id,
+                        **exc.log_extra(),
+                    },
+                )
+                continue
+            except Exception as exc:
+                logger.error(
+                    "translated_message_edit_failed",
+                    extra={
+                        "guild_id": mapping.guild_id,
+                        "mapping_id": mapping.id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                continue
+
+            mapping.updated_at = datetime.utcnow()
+            if not translation.from_cache:
+                await self._track_usage(message.guild.id, translation, source_char_count)
+            edited_count += 1
+
+        await self.session.commit()
+        return edited_count
+
+    async def sync_deleted_message(self, guild: discord.Guild, original_message_id: int) -> int:
+        mappings = await self._message_mappings(guild.id, original_message_id)
+        deleted_count = 0
+        mapping_ids_to_delete: list[int] = []
+
+        for mapping in mappings:
+            route = await self._route_for_mapping(mapping)
+            if route is None:
+                logger.warning(
+                    "delete_sync_route_not_found",
+                    extra={
+                        "guild_id": mapping.guild_id,
+                        "mapping_id": mapping.id,
+                        "target_channel_id": mapping.target_channel_id,
+                        "target_language": mapping.target_language,
+                    },
+                )
+                mapping_ids_to_delete.append(mapping.id)
+                continue
+
+            webhook = await self._webhook_for_route(guild, route)
+            if webhook is None:
+                logger.warning(
+                    "delete_sync_webhook_not_found",
+                    extra={"guild_id": route.guild_id, "route_id": route.id, "webhook_id": route.webhook_id},
+                )
+                mapping_ids_to_delete.append(mapping.id)
+                continue
+
+            try:
+                await webhook.delete_message(mapping.translated_message_id)
+                deleted_count += 1
+            except discord.NotFound:
+                logger.warning(
+                    "translated_message_missing_on_delete",
+                    extra={
+                        "guild_id": mapping.guild_id,
+                        "mapping_id": mapping.id,
+                        "translated_message_id": mapping.translated_message_id,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "translated_message_delete_failed",
+                    extra={
+                        "guild_id": mapping.guild_id,
+                        "mapping_id": mapping.id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                continue
+
+            mapping_ids_to_delete.append(mapping.id)
+
+        if mapping_ids_to_delete:
+            await self.session.execute(delete(MessageMapping).where(MessageMapping.id.in_(mapping_ids_to_delete)))
+        await self.session.commit()
+        return deleted_count
+
     async def _active_routes(self, guild_id: int, source_channel_id: int) -> list[ChannelRoute]:
         result = await self.session.execute(
             select(ChannelRoute).where(
@@ -156,6 +306,34 @@ class RelayService:
             )
         )
         return list(result.scalars().all())
+
+    async def _message_mappings(self, guild_id: int, original_message_id: int) -> list[MessageMapping]:
+        result = await self.session.execute(
+            select(MessageMapping).where(
+                MessageMapping.guild_id == guild_id,
+                MessageMapping.original_message_id == original_message_id,
+            )
+        )
+        return list(result.scalars().all())
+
+    async def _route_for_mapping(self, mapping: MessageMapping) -> ChannelRoute | None:
+        result = await self.session.execute(
+            select(ChannelRoute)
+            .where(
+                ChannelRoute.guild_id == mapping.guild_id,
+                ChannelRoute.source_channel_id == mapping.original_channel_id,
+                ChannelRoute.target_channel_id == mapping.target_channel_id,
+                ChannelRoute.target_language == mapping.target_language,
+            )
+            .order_by(ChannelRoute.is_active.desc(), ChannelRoute.updated_at.desc())
+        )
+        return result.scalars().first()
+
+    async def _webhook_for_route(self, guild: discord.Guild, route: ChannelRoute) -> discord.Webhook | None:
+        target_channel = guild.get_channel(route.target_channel_id)
+        if not isinstance(target_channel, discord.TextChannel):
+            return None
+        return await self.webhook_service.get_for_route(target_channel, route.webhook_id)
 
     async def _translate_with_cache(self, text: str, target_language: str) -> "CachedTranslationResult":
         source_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -243,8 +421,7 @@ class RelayService:
 
     @staticmethod
     def _translated_body(translated_text: str, original_message_url: str) -> str:
-        safe_translated_text = sanitize_mentions(clean_translation_output(translated_text))
-        return f"{safe_translated_text}\n\n[Original]({original_message_url})"
+        return build_translated_message_body(translated_text, original_message_url)
 
 
 class CachedTranslationResult(TranslationResult):

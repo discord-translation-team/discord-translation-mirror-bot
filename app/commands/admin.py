@@ -14,6 +14,7 @@ from app.models import ChannelRoute, GuildUsageMonthly
 from app.services.language_service import LanguageService
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError
+from app.translation.output_cleaner import clean_translation_output
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,14 @@ class AdminCommands(commands.Cog):
         database: Database,
         translation_provider: TranslationProvider,
         webhook_service: WebhookService,
+        max_message_chars: int,
+        skip_messages_over_limit: bool,
     ) -> None:
         self.database = database
         self.translation_provider = translation_provider
         self.webhook_service = webhook_service
+        self.max_message_chars = max_message_chars
+        self.skip_messages_over_limit = skip_messages_over_limit
 
     @app_commands.command(name="translate_setup", description="Create or update a translation mirror route")
     @app_commands.guild_only()
@@ -55,14 +60,19 @@ class AdminCommands(commands.Cog):
             return
 
         async with self.database.session() as session:
-            existing = await session.execute(
+            exact_match = await session.execute(
                 select(ChannelRoute).where(
                     ChannelRoute.guild_id == interaction.guild.id,
                     ChannelRoute.source_channel_id == source_channel.id,
+                    ChannelRoute.target_channel_id == target_channel.id,
                     ChannelRoute.target_language == language,
                 )
             )
-            route = existing.scalar_one_or_none()
+            route = exact_match.scalars().first()
+            if route is not None and route.is_active:
+                await interaction.followup.send("This route already exists.", ephemeral=True)
+                return
+
             if route is None:
                 route = ChannelRoute(
                     guild_id=interaction.guild.id,
@@ -75,7 +85,6 @@ class AdminCommands(commands.Cog):
                 )
                 session.add(route)
             else:
-                route.target_channel_id = target_channel.id
                 route.webhook_id = webhook.id
                 route.webhook_token = webhook.token
                 route.is_active = True
@@ -146,11 +155,12 @@ class AdminCommands(commands.Cog):
                     ChannelRoute.is_active.is_(True),
                 )
             )
-            route = result.scalar_one_or_none()
-            if route is None:
+            routes = result.scalars().all()
+            if not routes:
                 await interaction.response.send_message("No active matching route found.", ephemeral=True)
                 return
-            route.is_active = False
+            for route in routes:
+                route.is_active = False
             await session.commit()
 
         logger.info(
@@ -162,7 +172,7 @@ class AdminCommands(commands.Cog):
             },
         )
         await interaction.response.send_message(
-            f"Removed route for {source_channel.mention} -> `{language}`.",
+            f"Deactivated {len(routes)} route(s) for {source_channel.mention} -> `{language}`.",
             ephemeral=True,
         )
 
@@ -203,6 +213,8 @@ class AdminCommands(commands.Cog):
                     f"Monthly input tokens: `{usage.input_tokens_used if usage else 0}`",
                     f"Monthly output tokens: `{usage.output_tokens_used if usage else 0}`",
                     f"Monthly character count: `{usage.characters_used if usage else 0}`",
+                    f"Max message chars: `{self.max_message_chars}`",
+                    f"Skip over limit: `{'yes' if self.skip_messages_over_limit else 'no'}`",
                     f"Database: `{'ok' if db_ok else 'unavailable'}`",
                 ]
             ),
@@ -247,7 +259,7 @@ class AdminCommands(commands.Cog):
             return
 
         await interaction.followup.send(
-            sanitize_mentions(translated.translated_text),
+            sanitize_mentions(clean_translation_output(translated.translated_text)),
             allowed_mentions=discord.AllowedMentions.none(),
             ephemeral=True,
         )

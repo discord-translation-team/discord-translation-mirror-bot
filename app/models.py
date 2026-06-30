@@ -23,7 +23,13 @@ class TimestampMixin:
 class ChannelRoute(TimestampMixin, Base):
     __tablename__ = "channel_routes"
     __table_args__ = (
-        UniqueConstraint("guild_id", "source_channel_id", "target_language", name="uq_route_language"),
+        UniqueConstraint(
+            "guild_id",
+            "source_channel_id",
+            "target_channel_id",
+            "target_language",
+            name="uq_route_target_language",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

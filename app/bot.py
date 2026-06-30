@@ -54,7 +54,15 @@ class TranslationMirrorBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.database.create_tables()
-        await self.add_cog(AdminCommands(self.database, self.translation_provider, self.webhook_service))
+        await self.add_cog(
+            AdminCommands(
+                self.database,
+                self.translation_provider,
+                self.webhook_service,
+                max_message_chars=self.settings.max_message_chars,
+                skip_messages_over_limit=self.settings.skip_messages_over_limit,
+            )
+        )
         synced = await self.tree.sync()
         logger.info("slash_commands_synced", extra={"count": len(synced)})
 
@@ -100,11 +108,36 @@ class TranslationMirrorBot(commands.Bot):
             return
 
         async with self.database.session() as session:
-            relay_service = RelayService(session, self.translation_provider, self.webhook_service)
-            relay_service.max_message_chars = self.settings.max_message_chars
-            relay_service.skip_messages_over_limit = self.settings.skip_messages_over_limit
-            relay_service.default_monthly_char_limit = self.settings.default_monthly_char_limit
-            await relay_service.relay_message(message)
+            await self._relay_service(session).relay_message(message)
+
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        if after.guild is None or after.author.bot or after.webhook_id is not None:
+            return
+
+        async with self.database.session() as session:
+            await self._relay_service(session).sync_edited_message(after)
+
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        if payload.guild_id is None:
+            return
+
+        guild = self.get_guild(payload.guild_id)
+        if guild is None:
+            logger.warning(
+                "delete_sync_guild_not_found",
+                extra={"guild_id": payload.guild_id, "message_id": payload.message_id},
+            )
+            return
+
+        async with self.database.session() as session:
+            await self._relay_service(session).sync_deleted_message(guild, payload.message_id)
+
+    def _relay_service(self, session) -> RelayService:
+        relay_service = RelayService(session, self.translation_provider, self.webhook_service)
+        relay_service.max_message_chars = self.settings.max_message_chars
+        relay_service.skip_messages_over_limit = self.settings.skip_messages_over_limit
+        relay_service.default_monthly_char_limit = self.settings.default_monthly_char_limit
+        return relay_service
 
 
 def main() -> None:
