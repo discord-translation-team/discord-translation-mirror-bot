@@ -18,6 +18,7 @@ from app.translation.base import TranslationProvider
 from app.translation.gemini_provider import GeminiTranslationProvider
 from app.translation.mock_provider import MockTranslationProvider
 from app.translation.openai_provider import OpenAITranslationProvider
+from app.ui.language_setup import LanguageSetupView
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class TranslationMirrorBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.database.create_tables()
+        self.add_view(LanguageSetupView())
         await self.add_cog(
             AdminCommands(
                 self.database,

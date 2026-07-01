@@ -152,7 +152,33 @@ In the Discord Developer Portal:
 /set_language ru
 ```
 
-3. The user reacts with `🌐` to any message the bot can read.
+Admins can also create a persistent setup menu so users do not need to type `/set_language`:
+
+```text
+/language_setup_message #choose-language
+```
+
+Recommended setup flow:
+
+1. Create translation channels such as `#ru-translation` and `#en-translation`.
+2. Configure them:
+
+```text
+/translation_channel_set target_language:ru channel:#ru-translation
+/translation_channel_set target_language:en channel:#en-translation
+```
+
+3. Create the user setup message:
+
+```text
+/language_setup_message channel:#choose-language
+```
+
+User flow:
+
+1. Open `#choose-language`.
+2. Select a language from the dropdown.
+3. React with `🌐` to any message the bot can read.
 4. The bot posts the translation to the configured channel for that language.
 5. Users can also use the message context menu: Apps -> Translate.
 

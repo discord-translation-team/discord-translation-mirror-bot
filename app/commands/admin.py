@@ -22,6 +22,7 @@ from app.services.on_demand_translation_service import OnDemandTranslationServic
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError
 from app.translation.output_cleaner import clean_translation_output
+from app.ui.language_setup import LanguageSetupView, build_language_select_options
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,52 @@ class AdminCommands(commands.Cog):
 
         await interaction.response.send_message(
             f"Removed {result.rowcount or 0} translation channel setting(s) for `{language}`.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="language_setup_message", description="Post a persistent language setup dropdown")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def language_setup_message(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            result = await session.execute(
+                select(TranslationChannelSetting.target_language).where(
+                    TranslationChannelSetting.guild_id == interaction.guild.id,
+                )
+            )
+            languages = [LanguageService.normalize(language) for language in result.scalars().all()]
+
+        if not languages:
+            await interaction.response.send_message(
+                "No translation channels configured yet. Use /translation_channel_set first.",
+                ephemeral=True,
+            )
+            return
+
+        options = build_language_select_options(languages)
+        await channel.send(
+            "Choose your translation language. You can change it anytime.",
+            view=LanguageSetupView(options),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        logger.info(
+            "language_setup_message_posted",
+            extra={
+                "guild_id": interaction.guild.id,
+                "channel_id": channel.id,
+                "configured_language_count": len(options),
+            },
+        )
+        await interaction.response.send_message(
+            f"Language setup message posted in {channel.mention}.",
             ephemeral=True,
         )
 
@@ -381,6 +428,7 @@ class AdminCommands(commands.Cog):
                     f"Reaction translation enabled: `{'yes' if self.reaction_translation_enabled else 'no'}`",
                     f"Reaction emoji: `{self.reaction_translate_emoji}`",
                     f"Context menu enabled: `{'yes' if self.context_menu_translation_enabled else 'no'}`",
+                    "Language setup menu enabled: `true`",
                     f"Provider: `{self.translation_provider.name}`",
                     f"Model: `{self._provider_model()}`",
                     f"Active legacy routes: `{route_count}`",
