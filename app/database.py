@@ -48,6 +48,13 @@ class Database:
                 if column_name not in table_columns:
                     await conn.execute(text(ddl))
 
+        if "on_demand_translation_mappings" in existing_columns:
+            dialect_name = conn.dialect.name
+            if dialect_name == "postgresql":
+                await conn.execute(
+                    text("ALTER TABLE on_demand_translation_mappings ALTER COLUMN translated_message_id DROP NOT NULL")
+                )
+
     @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
         async with self.session_factory() as session:

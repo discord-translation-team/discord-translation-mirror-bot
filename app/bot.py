@@ -193,7 +193,11 @@ class TranslationMirrorBot(commands.Bot):
             return
 
         async with self.database.session() as session:
-            result = await self._on_demand_service(session).publish_for_user(message, payload.user_id)
+            result = await self._on_demand_service(session).publish_for_user(
+                message,
+                payload.user_id,
+                trigger="reaction",
+            )
 
         if result.status == "missing_language" and self.settings.on_demand_setup_dm_fallback:
             try:

@@ -86,7 +86,7 @@ class OnDemandTranslationMapping(TimestampMixin, Base):
             "guild_id",
             "original_message_id",
             "target_language",
-            name="uq_on_demand_original_language",
+            name="uq_on_demand_translation_mapping_unique_target",
         ),
     )
 
@@ -96,7 +96,7 @@ class OnDemandTranslationMapping(TimestampMixin, Base):
     original_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     target_language: Mapped[str] = mapped_column(String(16), nullable=False)
     target_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    translated_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    translated_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     original_message_url: Mapped[str] = mapped_column(String(512), nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 

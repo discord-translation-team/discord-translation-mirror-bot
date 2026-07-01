@@ -5,12 +5,13 @@ import logging
 from datetime import datetime
 
 import discord
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.message_formatting import build_translated_message_body
 from app.models import ChannelRoute, GuildUsageMonthly, MessageMapping, TranslationCache
 from app.services.webhook_service import WebhookService
+from app.services.language_service import LanguageService
 from app.translation.base import TranslationProvider, TranslationProviderError, TranslationResult
 from app.translation.output_cleaner import clean_translation_output
 
@@ -336,13 +337,14 @@ class RelayService:
         return await self.webhook_service.get_for_route(target_channel, route.webhook_id)
 
     async def _translate_with_cache(self, text: str, target_language: str) -> "CachedTranslationResult":
+        target_language = LanguageService.normalize(target_language)
         source_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         provider = self.translation_provider.name
         model = self._provider_model()
         cached = await self.session.execute(
             select(TranslationCache).where(
                 TranslationCache.source_text_hash == source_hash,
-                TranslationCache.target_language == target_language,
+                func.lower(func.trim(TranslationCache.target_language)) == target_language,
                 TranslationCache.provider == provider,
                 TranslationCache.model == model,
             )
