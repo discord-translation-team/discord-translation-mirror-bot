@@ -177,7 +177,7 @@ Recommended setup flow:
 User flow:
 
 1. Open `#choose-language`.
-2. Select a language from the dropdown.
+2. Select your language from the dropdown in the setup message.
 3. React with `🌐` to any message the bot can read.
 4. The bot posts the translation to the configured channel for that language.
 5. Users can also use the message context menu: Apps -> Translate.

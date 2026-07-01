@@ -6,7 +6,7 @@ from app.commands.admin import AdminCommands
 from app.database import Database
 from app.models import TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
-from app.ui.language_setup import LanguageSelect, build_language_select_options
+from app.ui.language_setup import LanguageSelect, build_language_select_options, build_language_setup_embed
 
 
 class FakeResponse:
@@ -30,10 +30,10 @@ class FakeChannel:
     mention = "<#333>"
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, object]] = []
+        self.sent: list[dict[str, object]] = []
 
-    async def send(self, content: str, view=None, allowed_mentions=None):
-        self.sent.append((content, view))
+    async def send(self, content: str | None = None, embed=None, view=None, allowed_mentions=None):
+        self.sent.append({"content": content, "embed": embed, "view": view})
 
 
 class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
@@ -61,6 +61,13 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(labels["ru"], "Russian")
         self.assertEqual(labels["en"], "English")
         self.assertEqual(labels["sv"], "SV")
+
+    def test_select_placeholder_and_embed_copy(self) -> None:
+        select = LanguageSelect(build_language_select_options(["ru"]))
+        self.assertEqual(select.placeholder, "Select your translation language")
+        embed = build_language_setup_embed()
+        self.assertEqual(embed.title, "🌐 Choose your translation language")
+        self.assertIn("React with 🌐 to any message you want translated.", embed.description)
 
     async def test_setup_message_refuses_without_translation_channels(self) -> None:
         cog = AdminCommands(
@@ -100,7 +107,10 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(setting)
         self.assertEqual(setting.target_language, "ru")
-        self.assertEqual(interaction.response.messages, [("Your translation language is now Russian.", True)])
+        self.assertEqual(
+            interaction.response.messages,
+            [("Done — your translation language is now Russian. React with 🌐 to translate messages.", True)],
+        )
 
     async def test_selecting_language_updates_user_setting(self) -> None:
         await self._add_translation_channel("en")
@@ -118,7 +128,10 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
             setting = await session.get(UserLanguageSetting, 1)
 
         self.assertEqual(setting.target_language, "en")
-        self.assertEqual(interaction.response.messages, [("Your translation language is now English.", True)])
+        self.assertEqual(
+            interaction.response.messages,
+            [("Done — your translation language is now English. React with 🌐 to translate messages.", True)],
+        )
 
     async def test_selecting_language_fails_when_mapping_removed(self) -> None:
         interaction = FakeInteraction(self.database)

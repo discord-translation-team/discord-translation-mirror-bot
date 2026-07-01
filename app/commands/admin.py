@@ -22,7 +22,7 @@ from app.services.on_demand_translation_service import OnDemandTranslationServic
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError
 from app.translation.output_cleaner import clean_translation_output
-from app.ui.language_setup import LanguageSetupView, build_language_select_options
+from app.ui.language_setup import LanguageSetupView, build_language_select_options, build_language_setup_embed
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ class AdminCommands(commands.Cog):
 
         options = build_language_select_options(languages)
         await channel.send(
-            "Choose your translation language. You can change it anytime.",
+            embed=build_language_setup_embed(),
             view=LanguageSetupView(options),
             allowed_mentions=discord.AllowedMentions.none(),
         )

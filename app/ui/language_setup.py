@@ -31,7 +31,7 @@ class LanguageSelect(discord.ui.Select):
             ]
         super().__init__(
             custom_id=LANGUAGE_SELECT_CUSTOM_ID,
-            placeholder="Choose your translation language",
+            placeholder="Select your translation language",
             min_values=1,
             max_values=1,
             options=options,
@@ -105,9 +105,26 @@ class LanguageSelect(discord.ui.Select):
             },
         )
         await interaction.response.send_message(
-            f"Your translation language is now {LanguageService.display_name(language)}.",
+            (
+                f"Done — your translation language is now {LanguageService.display_name(language)}. "
+                "React with 🌐 to translate messages."
+            ),
             ephemeral=True,
         )
+
+
+def build_language_setup_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🌐 Choose your translation language",
+        description=(
+            "1. Select your language below.\n"
+            "2. React with 🌐 to any message you want translated.\n"
+            "3. The translation will appear in your language channel.\n\n"
+            "You can change your language anytime by selecting a different option here."
+        ),
+    )
+    embed.set_footer(text="If your language is missing, ask an admin to add a translation channel.")
+    return embed
 
 
 def build_language_select_options(languages: list[str]) -> list[discord.SelectOption]:
