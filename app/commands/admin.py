@@ -196,37 +196,6 @@ class AdminCommands(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.context_menu(name="Translate")
-    @app_commands.guild_only()
-    async def translate_context_menu(self, interaction: discord.Interaction, message: discord.Message) -> None:
-        if interaction.guild is None:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-        if not self.on_demand_channel_translation_enabled or not self.context_menu_translation_enabled:
-            await interaction.response.send_message("On-demand translation is disabled.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        async with self.database.session() as session:
-            service = self._on_demand_service(session)
-            result = await service.publish_for_user(message, interaction.user.id)
-
-        if result.status == "posted":
-            await interaction.followup.send(f"Translation posted to <#{result.target_channel_id}>.", ephemeral=True)
-        elif result.status == "duplicate":
-            await interaction.followup.send(f"Already translated in <#{result.target_channel_id}>.", ephemeral=True)
-        elif result.status == "missing_language":
-            await interaction.followup.send("Set your language first with `/set_language target_language:ru`.", ephemeral=True)
-        elif result.status == "missing_channel":
-            await interaction.followup.send(
-                f"No translation channel configured for `{result.target_language}`.",
-                ephemeral=True,
-            )
-        elif result.status == "empty_message":
-            await interaction.followup.send("That message has no text to translate.", ephemeral=True)
-        else:
-            await interaction.followup.send("Translation could not be posted.", ephemeral=True)
-
     @app_commands.command(name="translate_setup", description="Create or update a translation mirror route")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -501,3 +470,67 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.followup.send(message, ephemeral=True)
     else:
         await interaction.response.send_message(message, ephemeral=True)
+
+
+async def translate_context_menu_callback(
+    interaction: discord.Interaction,
+    message: discord.Message,
+) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot = interaction.client
+    settings = getattr(bot, "settings", None)
+    database = getattr(bot, "database", None)
+    translation_provider = getattr(bot, "translation_provider", None)
+    webhook_service = getattr(bot, "webhook_service", None)
+    if (
+        settings is None
+        or database is None
+        or translation_provider is None
+        or webhook_service is None
+        or not settings.on_demand_channel_translation_enabled
+        or not settings.context_menu_translation_enabled
+    ):
+        await interaction.response.send_message("On-demand translation is disabled.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    async with database.session() as session:
+        service = OnDemandTranslationService(session, translation_provider, webhook_service)
+        service.max_message_chars = settings.max_message_chars
+        service.skip_messages_over_limit = settings.skip_messages_over_limit
+        service.default_monthly_char_limit = settings.default_monthly_char_limit
+        result = await service.publish_for_user(message, interaction.user.id)
+
+    if result.status == "posted":
+        await interaction.followup.send(f"Translation posted to <#{result.target_channel_id}>.", ephemeral=True)
+    elif result.status == "duplicate":
+        await interaction.followup.send(f"Already translated in <#{result.target_channel_id}>.", ephemeral=True)
+    elif result.status == "missing_language":
+        await interaction.followup.send("Set your language first with `/set_language target_language:ru`.", ephemeral=True)
+    elif result.status == "missing_channel":
+        await interaction.followup.send(
+            f"No translation channel configured for `{result.target_language}`.",
+            ephemeral=True,
+        )
+    elif result.status == "empty_message":
+        await interaction.followup.send("That message has no text to translate.", ephemeral=True)
+    else:
+        await interaction.followup.send("Translation could not be posted.", ephemeral=True)
+
+
+translate_context_menu = app_commands.ContextMenu(
+    name="Translate",
+    callback=translate_context_menu_callback,
+)
+
+
+def register_translate_context_menu(tree: app_commands.CommandTree) -> None:
+    if tree.get_command("Translate", type=discord.AppCommandType.message) is not None:
+        return
+    try:
+        tree.add_command(translate_context_menu)
+    except app_commands.CommandAlreadyRegistered:
+        return

@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from app.commands.admin import AdminCommands
+from app.commands.admin import AdminCommands, register_translate_context_menu
 from app.config import Settings, configure_logging, load_settings
 from app.database import Database
 from app.services.on_demand_translation_service import OnDemandTranslationService
@@ -70,6 +70,8 @@ class TranslationMirrorBot(commands.Bot):
                 default_monthly_char_limit=self.settings.default_monthly_char_limit,
             )
         )
+        if self.settings.context_menu_translation_enabled:
+            register_translate_context_menu(self.tree)
         synced = await self.tree.sync()
         logger.info("slash_commands_synced", extra={"count": len(synced)})
 
