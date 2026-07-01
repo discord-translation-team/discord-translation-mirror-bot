@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import uuid
 
 import discord
 from discord import app_commands
@@ -105,10 +107,13 @@ class TranslationMirrorBot(commands.Bot):
         logger.info(
             "bot_ready",
             extra={
+                "process_id": os.getpid(),
                 "bot_user_id": self.user.id if self.user else None,
                 "guild_count": len(self.guilds),
                 "guilds": [{"id": guild.id, "name": guild.name} for guild in self.guilds],
                 "provider": self.settings.translation_provider,
+                "railway_git_commit_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+                "railway_service_name": os.getenv("RAILWAY_SERVICE_NAME"),
             },
         )
 
@@ -151,6 +156,18 @@ class TranslationMirrorBot(commands.Bot):
                 await self._relay_service(session).sync_deleted_message(guild, payload.message_id)
 
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        request_id = getattr(payload, "event_id", None) or uuid.uuid4().hex
+        logger.info(
+            "raw_reaction_event_received",
+            extra={
+                "request_id": request_id,
+                "guild_id": payload.guild_id,
+                "channel_id": payload.channel_id,
+                "message_id": payload.message_id,
+                "user_id": payload.user_id,
+                "emoji": str(payload.emoji),
+            },
+        )
         if (
             payload.guild_id is None
             or payload.user_id == (self.user.id if self.user else None)
@@ -197,6 +214,8 @@ class TranslationMirrorBot(commands.Bot):
                 message,
                 payload.user_id,
                 trigger="reaction",
+                request_id=request_id,
+                emoji=str(payload.emoji),
             )
 
         if result.status == "missing_language" and self.settings.on_demand_setup_dm_fallback:
@@ -229,6 +248,9 @@ def main() -> None:
         extra={
             "openai_api_key_present": "yes" if bool(settings.openai_api_key) else "no",
             "openai_translation_model": settings.openai_translation_model,
+            "process_id": os.getpid(),
+            "railway_git_commit_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            "railway_service_name": os.getenv("RAILWAY_SERVICE_NAME"),
             "legacy_mirror_mode_enabled": "yes" if settings.legacy_mirror_mode_enabled else "no",
             "on_demand_channel_translation_enabled": "yes"
             if settings.on_demand_channel_translation_enabled

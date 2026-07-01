@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 
 import discord
@@ -502,7 +503,12 @@ async def translate_context_menu_callback(
         service.max_message_chars = settings.max_message_chars
         service.skip_messages_over_limit = settings.skip_messages_over_limit
         service.default_monthly_char_limit = settings.default_monthly_char_limit
-        result = await service.publish_for_user(message, interaction.user.id, trigger="context_menu")
+        result = await service.publish_for_user(
+            message,
+            interaction.user.id,
+            trigger="context_menu",
+            request_id=uuid.uuid4().hex,
+        )
 
     if result.status == "posted":
         await interaction.followup.send(f"Translation posted to <#{result.target_channel_id}>.", ephemeral=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -49,7 +50,10 @@ class OnDemandTranslationService:
         message: discord.Message,
         user_id: int,
         trigger: str = "on_demand",
+        request_id: str | None = None,
+        emoji: str | None = None,
     ) -> OnDemandResult:
+        request_id = request_id or uuid.uuid4().hex
         if message.guild is None or message.author.bot or message.webhook_id is not None:
             return OnDemandResult("ignored")
 
@@ -84,18 +88,6 @@ class OnDemandTranslationService:
             return OnDemandResult("missing_language")
         language = LanguageService.normalize(language)
 
-        logger.info(
-            "on_demand_translation_request_received",
-            extra={
-                "guild_id": message.guild.id,
-                "original_channel_id": message.channel.id,
-                "original_message_id": message.id,
-                "user_id": user_id,
-                "target_language": language,
-                "trigger": trigger,
-            },
-        )
-
         channel_setting = await self._translation_channel(message.guild.id, language)
         if channel_setting is None:
             logger.warning(
@@ -116,9 +108,25 @@ class OnDemandTranslationService:
             )
             return OnDemandResult("missing_channel", target_language=language)
 
+        log_context = {
+            "request_id": request_id,
+            "trigger": trigger,
+            "guild_id": message.guild.id,
+            "original_channel_id": message.channel.id,
+            "original_message_id": message.id,
+            "target_language_normalized": language,
+            "target_channel_id": target_channel.id,
+            "user_id": user_id,
+        }
+        if emoji is not None:
+            log_context["emoji"] = emoji
+        logger.info("on_demand_translation_request_received", extra=log_context)
+
         relay = self._relay_helper()
         original_url = relay._original_message_url(message.guild.id, message.channel.id, message.id)
         reservation = await self._reserve_mapping(
+            request_id=request_id,
+            trigger=trigger,
             guild_id=message.guild.id,
             original_message_id=message.id,
             original_channel_id=message.channel.id,
@@ -126,6 +134,7 @@ class OnDemandTranslationService:
             target_channel_id=target_channel.id,
             original_message_url=original_url,
             created_by_user_id=user_id,
+            emoji=emoji,
         )
         if reservation.status == "duplicate":
             return OnDemandResult(
@@ -201,8 +210,12 @@ class OnDemandTranslationService:
                 "original_channel_id": message.channel.id,
                 "original_message_id": message.id,
                 "target_channel_id": target_channel.id,
-                "target_language": language,
+                "target_language_normalized": language,
                 "created_by_user_id": user_id,
+                "request_id": request_id,
+                "trigger": trigger,
+                "mapping_id": reservation.mapping_id,
+                "translated_message_id": translated_message.id,
             },
         )
         return OnDemandResult("posted", target_channel_id=target_channel.id, target_language=language)
@@ -355,6 +368,8 @@ class OnDemandTranslationService:
     async def _reserve_mapping(
         self,
         *,
+        request_id: str,
+        trigger: str,
         guild_id: int,
         original_message_id: int,
         original_channel_id: int,
@@ -362,6 +377,7 @@ class OnDemandTranslationService:
         target_channel_id: int,
         original_message_url: str,
         created_by_user_id: int,
+        emoji: str | None,
     ) -> "ReservationResult":
         target_language = LanguageService.normalize(target_language)
         existing = await self._mapping(guild_id, original_message_id, target_language)
@@ -369,12 +385,17 @@ class OnDemandTranslationService:
             logger.info(
                 "on_demand_translation_duplicate_skipped",
                 extra={
+                    "request_id": request_id,
+                    "trigger": trigger,
                     "guild_id": guild_id,
                     "original_channel_id": original_channel_id,
                     "original_message_id": original_message_id,
                     "user_id": created_by_user_id,
-                    "target_language": target_language,
+                    "target_language_normalized": target_language,
                     "target_channel_id": existing.target_channel_id,
+                    "emoji": emoji,
+                    "existing_mapping_id": existing.id,
+                    "existing_translated_message_id": existing.translated_message_id,
                 },
             )
             return ReservationResult(status="duplicate", mapping_id=existing.id, target_channel_id=existing.target_channel_id)
@@ -398,12 +419,17 @@ class OnDemandTranslationService:
             logger.info(
                 "on_demand_translation_duplicate_skipped",
                 extra={
+                    "request_id": request_id,
+                    "trigger": trigger,
                     "guild_id": guild_id,
                     "original_channel_id": original_channel_id,
                     "original_message_id": original_message_id,
                     "user_id": created_by_user_id,
-                    "target_language": target_language,
+                    "target_language_normalized": target_language,
                     "target_channel_id": existing.target_channel_id if existing else target_channel_id,
+                    "emoji": emoji,
+                    "existing_mapping_id": existing.id if existing else None,
+                    "existing_translated_message_id": existing.translated_message_id if existing else None,
                 },
             )
             return ReservationResult(
@@ -415,12 +441,15 @@ class OnDemandTranslationService:
         logger.info(
             "on_demand_translation_reservation_created",
             extra={
+                "request_id": request_id,
+                "trigger": trigger,
                 "guild_id": guild_id,
                 "original_channel_id": original_channel_id,
                 "original_message_id": original_message_id,
                 "user_id": created_by_user_id,
-                "target_language": target_language,
+                "target_language_normalized": target_language,
                 "target_channel_id": target_channel_id,
+                "emoji": emoji,
                 "mapping_id": mapping.id,
             },
         )
