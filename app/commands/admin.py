@@ -14,10 +14,12 @@ from app.mention_safety import sanitize_mentions
 from app.models import (
     ChannelRoute,
     GuildUsageMonthly,
+    LanguageRoleSetting,
     TranslationChannelSetting,
     UserLanguageSetting,
 )
 from app.services.language_service import LanguageService
+from app.services.language_role_service import LanguageRoleService
 from app.services.on_demand_translation_service import OnDemandTranslationService
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError
@@ -85,8 +87,33 @@ class AdminCommands(commands.Cog):
             else:
                 setting.target_language = language
             await session.commit()
+            role_sync = await LanguageRoleService(session).sync_member_language_role(
+                interaction.guild,
+                interaction.user,
+                language,
+            )
 
-        await interaction.response.send_message(f"Your translation language is now `{language}`.", ephemeral=True)
+        if role_sync.status == LanguageRoleService.PERMISSIONS_FAILED:
+            message = (
+                f"Your language was saved as {LanguageService.display_name(language)}, but I could not update "
+                "your Discord role. Please ask an admin to check my Manage Roles permission."
+            )
+        elif role_sync.status in {
+            LanguageRoleService.MISSING_ROLE_MAPPING,
+            LanguageRoleService.MISSING_DISCORD_ROLE,
+        }:
+            message = (
+                f"Done — your translation language is now {LanguageService.display_name(language)}. "
+                "React with 🌐 to translate messages. If you cannot see your translation channel, ask an admin "
+                "to configure language roles."
+            )
+        else:
+            message = (
+                f"Done — your translation language is now {LanguageService.display_name(language)}. "
+                "React with 🌐 to translate messages."
+            )
+
+        await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="my_language", description="Show your configured translation language")
     @app_commands.guild_only()
@@ -195,6 +222,73 @@ class AdminCommands(commands.Cog):
 
         await interaction.response.send_message(
             f"Removed {result.rowcount or 0} translation channel setting(s) for `{language}`.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="language_role_set", description="Set a language-specific Discord role")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def language_role_set(
+        self,
+        interaction: discord.Interaction,
+        target_language: str,
+        role: discord.Role,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        language = LanguageService.normalize(target_language)
+        if not LanguageService.validate(language):
+            await interaction.response.send_message("Target language must look like `ru`, `en`, or `pt-br`.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            await LanguageRoleService(session).set_language_role(interaction.guild.id, language, role.id)
+
+        await interaction.response.send_message(
+            f"Language role for {LanguageService.display_name(language)} set to {role.mention}.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="language_role_list", description="List language-specific Discord roles")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def language_role_list(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            settings = await LanguageRoleService(session).list_language_roles(interaction.guild.id)
+
+        if not settings:
+            await interaction.response.send_message("No language roles configured.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "\n".join(
+                f"{LanguageService.display_name(setting.target_language)} "
+                f"({LanguageService.normalize(setting.target_language)}) -> <@&{setting.role_id}>"
+                for setting in settings
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="language_role_remove", description="Remove a language-specific Discord role")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def language_role_remove(self, interaction: discord.Interaction, target_language: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        language = LanguageService.normalize(target_language)
+        async with self.database.session() as session:
+            await LanguageRoleService(session).remove_language_role(interaction.guild.id, language)
+
+        await interaction.response.send_message(
+            f"Language role for {LanguageService.display_name(language)} removed.",
             ephemeral=True,
         )
 
@@ -409,6 +503,12 @@ class AdminCommands(commands.Cog):
                 )
             )
             translation_channel_count = channel_count_result.scalar_one()
+            role_count_result = await session.execute(
+                select(func.count(LanguageRoleSetting.id)).where(
+                    LanguageRoleSetting.guild_id == interaction.guild.id,
+                )
+            )
+            language_role_count = role_count_result.scalar_one()
             usage_result = await session.execute(
                 select(GuildUsageMonthly).where(
                     GuildUsageMonthly.guild_id == interaction.guild.id,
@@ -433,6 +533,7 @@ class AdminCommands(commands.Cog):
                     f"Model: `{self._provider_model()}`",
                     f"Active legacy routes: `{route_count}`",
                     f"Configured translation channels: `{translation_channel_count}`",
+                    f"Configured language roles: `{language_role_count}`",
                     f"Monthly input tokens: `{usage.input_tokens_used if usage else 0}`",
                     f"Monthly output tokens: `{usage.output_tokens_used if usage else 0}`",
                     f"Monthly character count: `{usage.characters_used if usage else 0}`",

@@ -111,6 +111,7 @@ In the Discord Developer Portal:
    - Read Message History
    - Send Messages
    - Add Reactions if feedback reactions are enabled later
+   - Manage Roles for automatic language role sync
    - Manage Webhooks only for legacy mirror mode
    - Use Slash Commands
 
@@ -126,6 +127,12 @@ In the Discord Developer Portal:
   Admin command that lists configured language channels.
 - `/translation_channel_remove target_language`
   Admin command that removes a language channel mapping.
+- `/language_role_set target_language role`
+  Admin command that maps a language to the Discord role that can see that language channel.
+- `/language_role_list`
+  Admin command that lists configured language roles.
+- `/language_role_remove target_language`
+  Admin command that removes a language role mapping.
 - `/translate_setup source_channel target_channel target_language`
   Legacy mirror command. Creates or updates a source-channel mirror route when `LEGACY_MIRROR_MODE_ENABLED=true`.
 - `/translate_list`
@@ -133,7 +140,7 @@ In the Discord Developer Portal:
 - `/translate_remove source_channel target_language`
   Disables matching legacy mirror routes.
 - `/translate_status`
-  Shows feature flags, provider, model, configured channel count, monthly token counts, monthly character count, and database status.
+  Shows feature flags, provider, model, configured channel and language role counts, monthly token counts, monthly character count, and database status.
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
 
@@ -160,15 +167,43 @@ Admins can also create a persistent setup menu so users do not need to type `/se
 
 Recommended setup flow:
 
-1. Create translation channels such as `#ru-translation` and `#en-translation`.
-2. Configure them:
+1. Create roles:
+   - `lang-ru`
+   - `lang-en`
+   - `lang-fr`
+   - `lang-ar`
+   - `lang-tr`
+   - `lang-es`
+   - `lang-uk`
+2. Move the bot role above all `lang-*` roles in Server Settings -> Roles.
+3. Give the bot role `Manage Roles`.
+4. Hide translation channels from `@everyone`:
+   - `@everyone` -> View Channel disabled
+5. Allow the matching language role:
+   - `#ru-translation`: `lang-ru` -> View Channel enabled
+   - `#ru-translation`: `lang-ru` -> Read Message History enabled
+   - `#ru-translation`: `lang-ru` -> Send Messages disabled
+6. Allow the bot:
+   - `trans-bot` -> View Channel enabled
+   - `trans-bot` -> Send Messages enabled
+   - `trans-bot` -> Embed Links enabled
+   - `trans-bot` -> Read Message History enabled
+7. Configure translation channels:
 
 ```text
 /translation_channel_set target_language:ru channel:#ru-translation
 /translation_channel_set target_language:en channel:#en-translation
 ```
 
-3. Create the user setup message:
+8. Configure language role mappings:
+
+```text
+/language_role_set target_language:ru role:@lang-ru
+/language_role_set target_language:en role:@lang-en
+/language_role_set target_language:fr role:@lang-fr
+```
+
+9. Create the user setup message:
 
 ```text
 /language_setup_message channel:#choose-language

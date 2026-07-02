@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from app.models import TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
+from app.services.language_role_service import LanguageRoleService
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,11 @@ class LanguageSelect(discord.ui.Select):
             else:
                 setting.target_language = language
             await session.commit()
+            role_sync = await LanguageRoleService(session).sync_member_language_role(
+                interaction.guild,
+                interaction.user,
+                language,
+            )
 
         logger.info(
             "language_selected",
@@ -104,13 +110,26 @@ class LanguageSelect(discord.ui.Select):
                 "target_language": language,
             },
         )
-        await interaction.response.send_message(
-            (
+        if role_sync.status == LanguageRoleService.PERMISSIONS_FAILED:
+            message = (
+                f"Your language was saved as {LanguageService.display_name(language)}, but I could not update "
+                "your Discord role. Please ask an admin to check my Manage Roles permission."
+            )
+        elif role_sync.status in {
+            LanguageRoleService.MISSING_ROLE_MAPPING,
+            LanguageRoleService.MISSING_DISCORD_ROLE,
+        }:
+            message = (
+                f"Done — your translation language is now {LanguageService.display_name(language)}. "
+                "React with 🌐 to translate messages. If you cannot see your translation channel, ask an admin "
+                "to configure language roles."
+            )
+        else:
+            message = (
                 f"Done — your translation language is now {LanguageService.display_name(language)}. "
                 "React with 🌐 to translate messages."
-            ),
-            ephemeral=True,
-        )
+            )
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 def build_language_setup_embed() -> discord.Embed:

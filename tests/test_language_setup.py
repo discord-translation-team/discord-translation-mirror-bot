@@ -4,8 +4,9 @@ from pathlib import Path
 
 from app.commands.admin import AdminCommands
 from app.database import Database
-from app.models import TranslationChannelSetting, UserLanguageSetting
+from app.models import LanguageRoleSetting, TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
+from app.services.language_role_service import LanguageRoleService
 from app.ui.language_setup import LanguageSelect, build_language_select_options, build_language_setup_embed
 
 
@@ -17,10 +18,57 @@ class FakeResponse:
         self.messages.append((content, ephemeral))
 
 
+class FakeRole:
+    def __init__(self, role_id: int, name: str) -> None:
+        self.id = role_id
+        self.name = name
+        self.mention = f"@{name}"
+
+
+class FakeMember:
+    def __init__(self, user_id: int, roles: list[FakeRole] | None = None, fail_permissions: bool = False) -> None:
+        self.id = user_id
+        self.roles = roles or []
+        self.added_roles: list[FakeRole] = []
+        self.removed_roles: list[FakeRole] = []
+        self.fail_permissions = fail_permissions
+
+    async def add_roles(self, *roles: FakeRole, reason: str | None = None) -> None:
+        if self.fail_permissions:
+            raise PermissionError("missing manage roles")
+        self.added_roles.extend(roles)
+        for role in roles:
+            if role.id not in {existing.id for existing in self.roles}:
+                self.roles.append(role)
+
+    async def remove_roles(self, *roles: FakeRole, reason: str | None = None) -> None:
+        if self.fail_permissions:
+            raise PermissionError("missing manage roles")
+        self.removed_roles.extend(roles)
+        remove_ids = {role.id for role in roles}
+        self.roles = [role for role in self.roles if role.id not in remove_ids]
+
+
+class FakeGuild:
+    def __init__(self, guild_id: int = 111, roles: list[FakeRole] | None = None) -> None:
+        self.id = guild_id
+        self._roles = {role.id: role for role in roles or []}
+
+    def get_role(self, role_id: int) -> FakeRole | None:
+        return self._roles.get(role_id)
+
+
 class FakeInteraction:
-    def __init__(self, database: Database, guild_id: int = 111, user_id: int = 222) -> None:
-        self.guild = type("Guild", (), {"id": guild_id})()
-        self.user = type("User", (), {"id": user_id})()
+    def __init__(
+        self,
+        database: Database,
+        guild_id: int = 111,
+        user_id: int = 222,
+        guild: FakeGuild | None = None,
+        user: FakeMember | None = None,
+    ) -> None:
+        self.guild = guild or FakeGuild(guild_id)
+        self.user = user or FakeMember(user_id)
         self.client = type("Client", (), {"database": database})()
         self.response = FakeResponse()
 
@@ -96,6 +144,48 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_selecting_language_creates_user_setting(self) -> None:
         await self._add_translation_channel("ru")
+        role = FakeRole(444, "lang-ru")
+        await self._add_language_role("ru", role.id)
+        member = FakeMember(222)
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, [role]), user=member)
+        select = LanguageSelect(build_language_select_options(["ru"]))
+        select._values = ["ru"]
+
+        await select.callback(interaction)
+
+        async with self.database.session() as session:
+            setting = await session.get(UserLanguageSetting, 1)
+
+        self.assertIsNotNone(setting)
+        self.assertEqual(setting.target_language, "ru")
+        self.assertEqual(member.added_roles, [role])
+        self.assertEqual(interaction.response.messages[0][1], True)
+        self.assertIn("your translation language is now Russian", interaction.response.messages[0][0])
+
+    async def test_selecting_language_updates_user_setting(self) -> None:
+        await self._add_translation_channel("en")
+        role = FakeRole(555, "lang-en")
+        await self._add_language_role("en", role.id)
+        async with self.database.session() as session:
+            session.add(UserLanguageSetting(guild_id=111, user_id=222, target_language="ru"))
+            await session.commit()
+
+        member = FakeMember(222)
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, [role]), user=member)
+        select = LanguageSelect(build_language_select_options(["en"]))
+        select._values = ["en"]
+
+        await select.callback(interaction)
+
+        async with self.database.session() as session:
+            setting = await session.get(UserLanguageSetting, 1)
+
+        self.assertEqual(setting.target_language, "en")
+        self.assertEqual(member.added_roles, [role])
+        self.assertIn("your translation language is now English", interaction.response.messages[0][0])
+
+    async def test_selecting_language_warns_when_role_mapping_missing(self) -> None:
+        await self._add_translation_channel("ru")
         interaction = FakeInteraction(self.database)
         select = LanguageSelect(build_language_select_options(["ru"]))
         select._values = ["ru"]
@@ -107,31 +197,7 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(setting)
         self.assertEqual(setting.target_language, "ru")
-        self.assertEqual(
-            interaction.response.messages,
-            [("Done — your translation language is now Russian. React with 🌐 to translate messages.", True)],
-        )
-
-    async def test_selecting_language_updates_user_setting(self) -> None:
-        await self._add_translation_channel("en")
-        async with self.database.session() as session:
-            session.add(UserLanguageSetting(guild_id=111, user_id=222, target_language="ru"))
-            await session.commit()
-
-        interaction = FakeInteraction(self.database)
-        select = LanguageSelect(build_language_select_options(["en"]))
-        select._values = ["en"]
-
-        await select.callback(interaction)
-
-        async with self.database.session() as session:
-            setting = await session.get(UserLanguageSetting, 1)
-
-        self.assertEqual(setting.target_language, "en")
-        self.assertEqual(
-            interaction.response.messages,
-            [("Done — your translation language is now English. React with 🌐 to translate messages.", True)],
-        )
+        self.assertIn("ask an admin to configure language roles", interaction.response.messages[0][0])
 
     async def test_selecting_language_fails_when_mapping_removed(self) -> None:
         interaction = FakeInteraction(self.database)
@@ -149,10 +215,140 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
             [("This language is no longer available. Please ask an admin to update the setup message.", True)],
         )
 
+    async def test_language_role_mapping_create_update_remove_normalizes_language(self) -> None:
+        async with self.database.session() as session:
+            service = LanguageRoleService(session)
+            await service.set_language_role(111, " RU ", 444)
+            await service.set_language_role(111, "ru", 555)
+            settings = await service.list_language_roles(111)
+
+        self.assertEqual(len(settings), 1)
+        self.assertEqual(settings[0].target_language, "ru")
+        self.assertEqual(settings[0].role_id, 555)
+
+        async with self.database.session() as session:
+            removed_count = await LanguageRoleService(session).remove_language_role(111, " RU ")
+            settings = await LanguageRoleService(session).list_language_roles(111)
+
+        self.assertEqual(removed_count, 1)
+        self.assertEqual(settings, [])
+
+    async def test_sync_removes_old_configured_roles_and_adds_selected_role(self) -> None:
+        ru_role = FakeRole(444, "lang-ru")
+        en_role = FakeRole(555, "lang-en")
+        await self._add_language_role("ru", ru_role.id)
+        await self._add_language_role("en", en_role.id)
+        member = FakeMember(222, roles=[ru_role])
+
+        async with self.database.session() as session:
+            result = await LanguageRoleService(session).sync_member_language_role(
+                FakeGuild(111, [ru_role, en_role]),
+                member,
+                " EN ",
+            )
+
+        self.assertEqual(result.status, LanguageRoleService.SYNCED)
+        self.assertEqual(member.removed_roles, [ru_role])
+        self.assertEqual(member.added_roles, [en_role])
+        self.assertEqual([role.id for role in member.roles], [en_role.id])
+
+    async def test_sync_missing_role_mapping_does_not_fail(self) -> None:
+        ru_role = FakeRole(444, "lang-ru")
+        await self._add_language_role("ru", ru_role.id)
+        member = FakeMember(222, roles=[ru_role])
+
+        async with self.database.session() as session:
+            result = await LanguageRoleService(session).sync_member_language_role(
+                FakeGuild(111, [ru_role]),
+                member,
+                "fr",
+            )
+
+        self.assertEqual(result.status, LanguageRoleService.MISSING_ROLE_MAPPING)
+        self.assertEqual(member.roles, [ru_role])
+
+    async def test_sync_deleted_discord_role_is_handled_safely(self) -> None:
+        await self._add_language_role("ru", 444)
+        member = FakeMember(222)
+
+        async with self.database.session() as session:
+            result = await LanguageRoleService(session).sync_member_language_role(
+                FakeGuild(111, []),
+                member,
+                "ru",
+            )
+
+        self.assertEqual(result.status, LanguageRoleService.MISSING_DISCORD_ROLE)
+        self.assertEqual(member.added_roles, [])
+
+    async def test_set_language_calls_role_sync(self) -> None:
+        role = FakeRole(444, "lang-ru")
+        await self._add_language_role("ru", role.id)
+        member = FakeMember(222)
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, [role]), user=member)
+        cog = self._cog()
+
+        await cog.set_language.callback(cog, interaction, " RU ")
+
+        async with self.database.session() as session:
+            setting = await session.get(UserLanguageSetting, 1)
+
+        self.assertEqual(setting.target_language, "ru")
+        self.assertEqual(member.added_roles, [role])
+        self.assertIn("your translation language is now Russian", interaction.response.messages[0][0])
+
+    async def test_set_language_reports_role_sync_permission_failure_after_saving(self) -> None:
+        role = FakeRole(444, "lang-ru")
+        await self._add_language_role("ru", role.id)
+        member = FakeMember(222, fail_permissions=True)
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, [role]), user=member)
+        cog = self._cog()
+
+        await cog.set_language.callback(cog, interaction, "ru")
+
+        async with self.database.session() as session:
+            setting = await session.get(UserLanguageSetting, 1)
+
+        self.assertEqual(setting.target_language, "ru")
+        self.assertIn("could not update your Discord role", interaction.response.messages[0][0])
+
+    async def test_language_role_admin_commands(self) -> None:
+        role = FakeRole(444, "lang-ru")
+        interaction = FakeInteraction(self.database)
+        cog = self._cog()
+
+        await cog.language_role_set.callback(cog, interaction, " RU ", role)
+        await cog.language_role_list.callback(cog, interaction)
+        await cog.language_role_remove.callback(cog, interaction, "ru")
+
+        self.assertEqual(interaction.response.messages[0], ("Language role for Russian set to @lang-ru.", True))
+        self.assertIn("Russian (ru) -> <@&444>", interaction.response.messages[1][0])
+        self.assertEqual(interaction.response.messages[2], ("Language role for Russian removed.", True))
+
     async def _add_translation_channel(self, language: str) -> None:
         async with self.database.session() as session:
             session.add(TranslationChannelSetting(guild_id=111, target_language=language, channel_id=999))
             await session.commit()
+
+    async def _add_language_role(self, language: str, role_id: int) -> None:
+        async with self.database.session() as session:
+            session.add(LanguageRoleSetting(guild_id=111, target_language=language, role_id=role_id))
+            await session.commit()
+
+    def _cog(self) -> AdminCommands:
+        return AdminCommands(
+            self.database,
+            translation_provider=None,
+            webhook_service=None,
+            max_message_chars=1500,
+            skip_messages_over_limit=True,
+            legacy_mirror_mode_enabled=False,
+            on_demand_channel_translation_enabled=True,
+            reaction_translation_enabled=True,
+            context_menu_translation_enabled=True,
+            reaction_translate_emoji="🌐",
+            default_monthly_char_limit=500000,
+        )
 
 
 if __name__ == "__main__":
