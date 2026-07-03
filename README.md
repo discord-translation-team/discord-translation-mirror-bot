@@ -179,6 +179,8 @@ In the Discord Developer Portal:
   Admin command that checks server permissions, language mappings, channel access, role hierarchy, and setup completeness.
 - `/setup_server languages source_channel`
   Admin command that creates/reuses the standard translation category, channels, roles, mappings, and tracked setup menu. `source_channel` is optional; when omitted, the bot creates or reuses `#global-chat`.
+- `/setup_cleanup`
+  Admin maintenance command that removes unsupported or orphaned setup mappings and clears stale setup-message tracking. It does not delete Discord channels or roles.
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
 

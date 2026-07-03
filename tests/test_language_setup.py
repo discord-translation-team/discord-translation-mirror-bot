@@ -712,6 +712,92 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Tracked: ✅", report)
         self.assertIn("Message exists: ✅", report)
 
+    async def test_setup_cleanup_removes_unsupported_mappings(self) -> None:
+        async with self.database.session() as session:
+            session.add(TranslationChannelSetting(guild_id=111, target_language="eng", channel_id=999))
+            session.add(LanguageRoleSetting(guild_id=111, target_language="eg", role_id=444))
+            await session.commit()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_cleanup.callback(cog, interaction)
+
+        summary = interaction.response.messages[0][0]
+        self.assertIn("Unsupported translation mappings removed: 1", summary)
+        self.assertIn("Unsupported role mappings removed: 1", summary)
+        async with self.database.session() as session:
+            self.assertEqual((await session.execute(select(TranslationChannelSetting))).scalars().all(), [])
+            self.assertEqual((await session.execute(select(LanguageRoleSetting))).scalars().all(), [])
+
+    async def test_setup_cleanup_removes_orphan_channel_and_role_mappings(self) -> None:
+        async with self.database.session() as session:
+            session.add(TranslationChannelSetting(guild_id=111, target_language="ru", channel_id=999))
+            session.add(LanguageRoleSetting(guild_id=111, target_language="ru", role_id=444))
+            await session.commit()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_cleanup.callback(cog, interaction)
+
+        summary = interaction.response.messages[0][0]
+        self.assertIn("Orphan channel mappings removed: 1", summary)
+        self.assertIn("Orphan role mappings removed: 1", summary)
+        async with self.database.session() as session:
+            self.assertEqual((await session.execute(select(TranslationChannelSetting))).scalars().all(), [])
+            self.assertEqual((await session.execute(select(LanguageRoleSetting))).scalars().all(), [])
+
+    async def test_setup_cleanup_keeps_valid_mappings(self) -> None:
+        channel = FakeChannel(999)
+        role = FakeRole(444, "lang-ru")
+        async with self.database.session() as session:
+            session.add(TranslationChannelSetting(guild_id=111, target_language="ru", channel_id=channel.id))
+            session.add(LanguageRoleSetting(guild_id=111, target_language="ru", role_id=role.id))
+            await session.commit()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, roles=[role], channels=[channel]))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_cleanup.callback(cog, interaction)
+
+        summary = interaction.response.messages[0][0]
+        self.assertIn("Unsupported translation mappings removed: 0", summary)
+        self.assertIn("Orphan channel mappings removed: 0", summary)
+        async with self.database.session() as session:
+            self.assertEqual(len((await session.execute(select(TranslationChannelSetting))).scalars().all()), 1)
+            self.assertEqual(len((await session.execute(select(LanguageRoleSetting))).scalars().all()), 1)
+
+    async def test_setup_cleanup_clears_missing_setup_message_tracking(self) -> None:
+        channel = FakeChannel(999)
+        async with self.database.session() as session:
+            session.add(LanguageSetupMessage(guild_id=111, channel_id=channel.id, message_id=12345))
+            await session.commit()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, channels=[channel]))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_cleanup.callback(cog, interaction)
+
+        summary = interaction.response.messages[0][0]
+        self.assertIn("Setup tracking cleared: yes", summary)
+        self.assertIn("Run /language_setup_message or /setup_server to recreate the setup message.", summary)
+        async with self.database.session() as session:
+            self.assertIsNone(await session.get(LanguageSetupMessage, 1))
+
+    async def test_setup_cleanup_keeps_existing_setup_message_tracking(self) -> None:
+        channel = FakeChannel(999)
+        message = await channel.send(embed=None, view=None)
+        async with self.database.session() as session:
+            session.add(LanguageSetupMessage(guild_id=111, channel_id=channel.id, message_id=message.id))
+            await session.commit()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, channels=[channel]))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_cleanup.callback(cog, interaction)
+
+        summary = interaction.response.messages[0][0]
+        self.assertIn("Setup tracking cleared: no", summary)
+        self.assertIn("Old setup messages deleted: not attempted", summary)
+        async with self.database.session() as session:
+            self.assertIsNotNone(await session.get(LanguageSetupMessage, 1))
+
     async def test_setup_check_reports_critical_role_hierarchy(self) -> None:
         await self._add_translation_channel("ru")
         await self._add_language_role("ru", 444)

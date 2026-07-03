@@ -475,6 +475,33 @@ class AdminCommands(commands.Cog):
         for page in pages[1:]:
             await interaction.followup.send(page, ephemeral=True)
 
+    @app_commands.command(name="setup_cleanup", description="Clean stale translation setup database mappings")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_cleanup(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        logger.info(
+            "setup_cleanup_started",
+            extra={"guild_id": interaction.guild.id, "user_id": interaction.user.id},
+        )
+        result = await self._cleanup_setup_data(interaction.guild)
+        logger.info(
+            "setup_cleanup_completed",
+            extra={
+                "guild_id": interaction.guild.id,
+                "user_id": interaction.user.id,
+                "unsupported_translation_count": result["unsupported_translation_count"],
+                "unsupported_role_count": result["unsupported_role_count"],
+                "orphan_channel_count": result["orphan_channel_count"],
+                "orphan_role_count": result["orphan_role_count"],
+                "setup_tracking_cleared": result["setup_tracking_cleared"],
+            },
+        )
+        await interaction.response.send_message(self._format_setup_cleanup_summary(result), ephemeral=True)
+
     @app_commands.command(name="translate_setup", description="Create or update a translation mirror route")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -727,6 +754,122 @@ class AdminCommands(commands.Cog):
 
     def _provider_model(self) -> str:
         return self.translation_provider.model_name or self.translation_provider.name
+
+    async def _cleanup_setup_data(self, guild) -> dict[str, object]:
+        result = {
+            "unsupported_translation_count": 0,
+            "unsupported_role_count": 0,
+            "orphan_channel_count": 0,
+            "orphan_role_count": 0,
+            "setup_tracking_cleared": False,
+            "old_setup_messages_deleted_count": None,
+        }
+
+        async with self.database.session() as session:
+            translation_rows = list(
+                (
+                    await session.execute(
+                        select(TranslationChannelSetting).where(TranslationChannelSetting.guild_id == guild.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for setting in translation_rows:
+                language = LanguageService.normalize(setting.target_language)
+                if not is_supported_language(language):
+                    await session.delete(setting)
+                    result["unsupported_translation_count"] += 1
+                    logger.info(
+                        "setup_cleanup_removed_unsupported_translation_mapping",
+                        extra={"guild_id": guild.id, "target_language": language},
+                    )
+                elif guild.get_channel(setting.channel_id) is None:
+                    await session.delete(setting)
+                    result["orphan_channel_count"] += 1
+                    logger.info(
+                        "setup_cleanup_removed_orphan_channel_mapping",
+                        extra={"guild_id": guild.id, "target_language": language, "channel_id": setting.channel_id},
+                    )
+
+            role_rows = list(
+                (
+                    await session.execute(
+                        select(LanguageRoleSetting).where(LanguageRoleSetting.guild_id == guild.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for setting in role_rows:
+                language = LanguageService.normalize(setting.target_language)
+                if not is_supported_language(language):
+                    await session.delete(setting)
+                    result["unsupported_role_count"] += 1
+                    logger.info(
+                        "setup_cleanup_removed_unsupported_role_mapping",
+                        extra={"guild_id": guild.id, "target_language": language},
+                    )
+                elif guild.get_role(setting.role_id) is None:
+                    await session.delete(setting)
+                    result["orphan_role_count"] += 1
+                    logger.info(
+                        "setup_cleanup_removed_orphan_role_mapping",
+                        extra={"guild_id": guild.id, "target_language": language, "role_id": setting.role_id},
+                    )
+
+            setup_message = (
+                await session.execute(select(LanguageSetupMessage).where(LanguageSetupMessage.guild_id == guild.id))
+            ).scalar_one_or_none()
+            if setup_message is not None and await self._setup_tracking_is_missing(guild, setup_message):
+                await session.delete(setup_message)
+                result["setup_tracking_cleared"] = True
+                logger.info(
+                    "setup_cleanup_cleared_setup_tracking",
+                    extra={
+                        "guild_id": guild.id,
+                        "channel_id": setup_message.channel_id,
+                        "message_id": setup_message.message_id,
+                    },
+                )
+
+            await session.commit()
+
+        return result
+
+    async def _setup_tracking_is_missing(self, guild, setup_message: LanguageSetupMessage) -> bool:
+        channel = guild.get_channel(setup_message.channel_id) if hasattr(guild, "get_channel") else None
+        if channel is None:
+            return True
+        try:
+            await channel.fetch_message(setup_message.message_id)
+            return False
+        except Exception:
+            return True
+
+    @staticmethod
+    def _format_setup_cleanup_summary(result: dict[str, object]) -> str:
+        old_deleted = result["old_setup_messages_deleted_count"]
+        old_deleted_line = (
+            "Old setup messages deleted: not attempted. Old duplicate setup messages are not deleted automatically yet."
+            if old_deleted is None
+            else f"Old setup messages deleted: {old_deleted}"
+        )
+        setup_tracking_line = "yes" if result["setup_tracking_cleared"] else "no"
+        lines = [
+            "Setup cleanup completed.",
+            "",
+            f"Unsupported translation mappings removed: {result['unsupported_translation_count']}",
+            f"Unsupported role mappings removed: {result['unsupported_role_count']}",
+            f"Orphan channel mappings removed: {result['orphan_channel_count']}",
+            f"Orphan role mappings removed: {result['orphan_role_count']}",
+            f"Setup tracking cleared: {setup_tracking_line}",
+            old_deleted_line,
+        ]
+        if result["setup_tracking_cleared"]:
+            lines.append("")
+            lines.append("Run /language_setup_message or /setup_server to recreate the setup message.")
+        return "\n".join(lines)
 
     async def _setup_server(
         self,
