@@ -1,34 +1,17 @@
 from __future__ import annotations
 
+from app.languages import get_language_display_name, is_supported_language, normalize_language_code
+
 
 class LanguageService:
-    DISPLAY_NAMES = {
-        "ru": "Russian",
-        "en": "English",
-        "es": "Spanish",
-        "de": "German",
-        "fr": "French",
-        "it": "Italian",
-        "pt": "Portuguese",
-        "pl": "Polish",
-        "uk": "Ukrainian",
-        "tr": "Turkish",
-        "ar": "Arabic",
-        "zh": "Chinese",
-        "ja": "Japanese",
-        "ko": "Korean",
-    }
-
     @staticmethod
     def normalize(language: str) -> str:
-        return language.strip().lower()
+        return normalize_language_code(language)
 
     @staticmethod
     def validate(language: str) -> bool:
-        normalized = LanguageService.normalize(language)
-        return 2 <= len(normalized) <= 16 and normalized.replace("-", "").isalpha()
+        return is_supported_language(language)
 
     @staticmethod
     def display_name(language: str) -> str:
-        normalized = LanguageService.normalize(language)
-        return LanguageService.DISPLAY_NAMES.get(normalized, normalized.upper())
+        return get_language_display_name(language)

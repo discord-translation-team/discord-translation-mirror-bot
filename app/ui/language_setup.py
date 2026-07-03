@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 
 import discord
-from sqlalchemy import func, select
+from sqlalchemy import select
 
+from app.languages import is_supported_language
 from app.models import TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
 from app.services.language_role_service import LanguageRoleService
@@ -50,6 +51,12 @@ class LanguageSelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
+        if not is_supported_language(language):
+            await interaction.response.send_message(
+                "This language is no longer supported. Please ask an admin to update the setup message.",
+                ephemeral=True,
+            )
+            return
 
         database = getattr(interaction.client, "database", None)
         if database is None:
@@ -58,12 +65,17 @@ class LanguageSelect(discord.ui.Select):
 
         async with database.session() as session:
             channel_result = await session.execute(
-                select(TranslationChannelSetting).where(
-                    TranslationChannelSetting.guild_id == interaction.guild.id,
-                    func.lower(func.trim(TranslationChannelSetting.target_language)) == language,
-                )
+                select(TranslationChannelSetting).where(TranslationChannelSetting.guild_id == interaction.guild.id)
             )
-            if channel_result.scalar_one_or_none() is None:
+            channel_setting = next(
+                (
+                    setting
+                    for setting in channel_result.scalars().all()
+                    if LanguageService.normalize(setting.target_language) == language
+                ),
+                None,
+            )
+            if channel_setting is None:
                 logger.info(
                     "language_selection_rejected_missing_channel",
                     extra={
@@ -147,7 +159,13 @@ def build_language_setup_embed() -> discord.Embed:
 
 
 def build_language_select_options(languages: list[str]) -> list[discord.SelectOption]:
-    unique_languages = sorted({LanguageService.normalize(language) for language in languages})
+    unique_languages = sorted(
+        {
+            LanguageService.normalize(language)
+            for language in languages
+            if is_supported_language(language)
+        }
+    )
     return [
         discord.SelectOption(
             label=LanguageService.display_name(language),

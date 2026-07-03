@@ -144,6 +144,39 @@ In the Discord Developer Portal:
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
 
+## Supported Language Codes
+
+Use these language codes when configuring channels, roles, and user languages:
+
+| Code | Language |
+| --- | --- |
+| en | English |
+| ru | Russian |
+| es | Spanish |
+| fr | French |
+| ar | Arabic |
+| tr | Turkish |
+| uk | Ukrainian |
+| de | German |
+| pt | Portuguese |
+| it | Italian |
+| zh | Chinese |
+| ja | Japanese |
+| ko | Korean |
+| pl | Polish |
+| hi | Hindi |
+| bn | Bengali |
+| id | Indonesian |
+| vi | Vietnamese |
+| nl | Dutch |
+| fa | Persian |
+
+Warnings:
+
+- Use `en` for English, not `eng`.
+- Use `ar` for Arabic, not `eg`.
+- Use `uk` for Ukrainian, not `ua`.
+
 ## User Flow
 
 1. An admin configures language channels:

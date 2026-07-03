@@ -2,8 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sqlalchemy import select
+
 from app.commands.admin import AdminCommands
 from app.database import Database
+from app.languages import is_supported_language, normalize_language_code, suggest_language_code
 from app.models import LanguageRoleSetting, TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
 from app.services.language_role_service import LanguageRoleService
@@ -102,13 +105,31 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
 
     def test_language_code_normalization(self) -> None:
         self.assertEqual(LanguageService.normalize(" RU "), "ru")
+        self.assertEqual(normalize_language_code("EN"), "en")
+        self.assertEqual(normalize_language_code("pt-BR"), "pt")
+        self.assertEqual(normalize_language_code("zh_CN"), "zh")
+
+    def test_supported_language_allowlist(self) -> None:
+        self.assertTrue(is_supported_language("en"))
+        self.assertTrue(is_supported_language("ar"))
+        self.assertFalse(is_supported_language("eng"))
+        self.assertFalse(is_supported_language("eg"))
+        self.assertFalse(is_supported_language("ua"))
+
+    def test_language_code_suggestions(self) -> None:
+        self.assertEqual(suggest_language_code("eng"), "en")
+        self.assertEqual(suggest_language_code("english"), "en")
+        self.assertEqual(suggest_language_code("eg"), "ar")
+        self.assertEqual(suggest_language_code("ua"), "uk")
+        self.assertEqual(suggest_language_code("ukrainian"), "uk")
+        self.assertEqual(suggest_language_code("farsi"), "fa")
 
     def test_setup_options_use_display_names(self) -> None:
         options = build_language_select_options(["ru", "EN", "sv"])
         labels = {option.value: option.label for option in options}
         self.assertEqual(labels["ru"], "Russian")
         self.assertEqual(labels["en"], "English")
-        self.assertEqual(labels["sv"], "SV")
+        self.assertNotIn("sv", labels)
 
     def test_select_placeholder_and_embed_copy(self) -> None:
         select = LanguageSelect(build_language_select_options(["ru"]))
@@ -139,8 +160,100 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.sent, [])
         self.assertEqual(
             interaction.response.messages,
-            [("No translation channels configured yet. Use /translation_channel_set first.", True)],
+            [("No supported translation channels configured yet. Use /translation_channel_set first.", True)],
         )
+
+    async def test_translation_channel_set_rejects_unsupported_language_with_suggestion(self) -> None:
+        interaction = FakeInteraction(self.database)
+        channel = FakeChannel()
+        cog = self._cog()
+
+        await cog.translation_channel_set.callback(cog, interaction, "eng", channel)
+
+        self.assertEqual(interaction.response.messages[0][0], "Unsupported language code: eng. Use en for English.")
+        async with self.database.session() as session:
+            result = await session.execute(select(TranslationChannelSetting))
+            self.assertEqual(result.scalars().all(), [])
+
+    async def test_translation_channel_set_rejects_country_code_eg(self) -> None:
+        interaction = FakeInteraction(self.database)
+        channel = FakeChannel()
+        cog = self._cog()
+
+        await cog.translation_channel_set.callback(cog, interaction, "eg", channel)
+
+        self.assertEqual(
+            interaction.response.messages[0][0],
+            "Unsupported language code: eg. Use ar for Arabic. EG is a country code, not a language code.",
+        )
+
+    async def test_language_role_set_rejects_ua_with_suggestion(self) -> None:
+        interaction = FakeInteraction(self.database)
+        role = FakeRole(444, "lang-uk")
+        cog = self._cog()
+
+        await cog.language_role_set.callback(cog, interaction, "ua", role)
+
+        self.assertEqual(interaction.response.messages[0][0], "Unsupported language code: ua. Use uk for Ukrainian.")
+        async with self.database.session() as session:
+            result = await session.execute(select(LanguageRoleSetting))
+            self.assertEqual(result.scalars().all(), [])
+
+    async def test_set_language_rejects_unsupported_language(self) -> None:
+        interaction = FakeInteraction(self.database)
+        cog = self._cog()
+
+        await cog.set_language.callback(cog, interaction, "xx")
+
+        self.assertIn("Unsupported language code: xx. Supported languages:", interaction.response.messages[0][0])
+        async with self.database.session() as session:
+            result = await session.execute(select(UserLanguageSetting))
+            self.assertEqual(result.scalars().all(), [])
+
+    async def test_remove_commands_allow_legacy_unsupported_languages(self) -> None:
+        async with self.database.session() as session:
+            session.add(TranslationChannelSetting(guild_id=111, target_language="eng", channel_id=999))
+            session.add(LanguageRoleSetting(guild_id=111, target_language="eg", role_id=444))
+            await session.commit()
+        interaction = FakeInteraction(self.database)
+        cog = self._cog()
+
+        await cog.translation_channel_remove.callback(cog, interaction, "eng")
+        await cog.language_role_remove.callback(cog, interaction, "eg")
+
+        self.assertEqual(interaction.response.messages[0], ("Removed legacy unsupported language mapping: eng.", True))
+        self.assertEqual(interaction.response.messages[1], ("Removed legacy unsupported language mapping: eg.", True))
+
+    async def test_language_lists_mark_unsupported_legacy_mappings(self) -> None:
+        async with self.database.session() as session:
+            session.add(TranslationChannelSetting(guild_id=111, target_language="eng", channel_id=999))
+            session.add(LanguageRoleSetting(guild_id=111, target_language="eg", role_id=444))
+            await session.commit()
+        interaction = FakeInteraction(self.database)
+        cog = self._cog()
+
+        await cog.translation_channel_list.callback(cog, interaction)
+        await cog.language_role_list.callback(cog, interaction)
+
+        self.assertIn("ENG (unsupported) -> <#999>", interaction.response.messages[0][0])
+        self.assertIn("Remove unsupported mappings with /translation_channel_remove.", interaction.response.messages[0][0])
+        self.assertIn("EG (unsupported) -> <@&444>", interaction.response.messages[1][0])
+        self.assertIn("Remove unsupported mappings with /language_role_remove.", interaction.response.messages[1][0])
+
+    async def test_setup_message_skips_unsupported_configured_mappings(self) -> None:
+        await self._add_translation_channel("ru")
+        await self._add_translation_channel("eng")
+        interaction = FakeInteraction(self.database)
+        channel = FakeChannel()
+        cog = self._cog()
+
+        await cog.language_setup_message.callback(cog, interaction, channel)
+
+        select = channel.sent[0]["view"].children[0]
+        option_values = [option.value for option in select.options]
+        option_labels = [option.label for option in select.options]
+        self.assertEqual(option_values, ["ru"])
+        self.assertEqual(option_labels, ["Russian"])
 
     async def test_selecting_language_creates_user_setting(self) -> None:
         await self._add_translation_channel("ru")

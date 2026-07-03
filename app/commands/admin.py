@@ -10,6 +10,7 @@ from discord.ext import commands
 from sqlalchemy import delete, func, select
 
 from app.database import Database
+from app.languages import format_supported_languages, is_supported_language, suggest_language_code
 from app.mention_safety import sanitize_mentions
 from app.models import (
     ChannelRoute,
@@ -27,6 +28,31 @@ from app.translation.output_cleaner import clean_translation_output
 from app.ui.language_setup import LanguageSetupView, build_language_select_options, build_language_setup_embed
 
 logger = logging.getLogger(__name__)
+
+
+def unsupported_language_message(language: str) -> str:
+    suggestion = suggest_language_code(language)
+    if suggestion is not None:
+        if LanguageService.normalize(language) == "eg":
+            return (
+                "Unsupported language code: eg. Use ar for Arabic. EG is a country code, "
+                "not a language code."
+            )
+        return (
+            f"Unsupported language code: {LanguageService.normalize(language)}. "
+            f"Use {suggestion} for {LanguageService.display_name(suggestion)}."
+        )
+    return (
+        f"Unsupported language code: {LanguageService.normalize(language)}. "
+        f"Supported languages: {format_supported_languages()}"
+    )
+
+
+def format_language_mapping_label(language: str) -> str:
+    normalized = LanguageService.normalize(language)
+    if is_supported_language(normalized):
+        return f"{LanguageService.display_name(normalized)} ({normalized})"
+    return f"{normalized.upper()} (unsupported)"
 
 
 class AdminCommands(commands.Cog):
@@ -65,7 +91,7 @@ class AdminCommands(commands.Cog):
 
         language = LanguageService.normalize(target_language)
         if not LanguageService.validate(language):
-            await interaction.response.send_message("Target language must look like `ru`, `en`, or `pt-br`.", ephemeral=True)
+            await interaction.response.send_message(unsupported_language_message(target_language), ephemeral=True)
             return
 
         async with self.database.session() as session:
@@ -133,6 +159,15 @@ class AdminCommands(commands.Cog):
 
         if language is None:
             await interaction.response.send_message("No language set. Use `/set_language target_language:ru`.", ephemeral=True)
+        elif not is_supported_language(language):
+            await interaction.response.send_message(
+                (
+                    f"Your translation language is currently {LanguageService.normalize(language).upper()}, "
+                    "which is unsupported. Please choose a supported language in #choose-language or use "
+                    "/set_language."
+                ),
+                ephemeral=True,
+            )
         else:
             await interaction.response.send_message(f"Your translation language is `{language}`.", ephemeral=True)
 
@@ -151,7 +186,7 @@ class AdminCommands(commands.Cog):
 
         language = LanguageService.normalize(target_language)
         if not LanguageService.validate(language):
-            await interaction.response.send_message("Target language must look like `ru`, `en`, or `pt-br`.", ephemeral=True)
+            await interaction.response.send_message(unsupported_language_message(target_language), ephemeral=True)
             return
 
         async with self.database.session() as session:
@@ -197,10 +232,15 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("No translation channels configured.", ephemeral=True)
             return
 
-        await interaction.response.send_message(
-            "\n".join(f"`{setting.target_language}` -> <#{setting.channel_id}>" for setting in settings),
-            ephemeral=True,
-        )
+        has_unsupported = any(not is_supported_language(setting.target_language) for setting in settings)
+        lines = [
+            f"{format_language_mapping_label(setting.target_language)} -> <#{setting.channel_id}>"
+            for setting in settings
+        ]
+        if has_unsupported:
+            lines.append("")
+            lines.append("Remove unsupported mappings with /translation_channel_remove.")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="translation_channel_remove", description="Remove a language translation channel")
     @app_commands.guild_only()
@@ -220,10 +260,11 @@ class AdminCommands(commands.Cog):
             )
             await session.commit()
 
-        await interaction.response.send_message(
-            f"Removed {result.rowcount or 0} translation channel setting(s) for `{language}`.",
-            ephemeral=True,
-        )
+        if is_supported_language(language):
+            message = f"Removed {result.rowcount or 0} translation channel setting(s) for `{language}`."
+        else:
+            message = f"Removed legacy unsupported language mapping: {language}."
+        await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="language_role_set", description="Set a language-specific Discord role")
     @app_commands.guild_only()
@@ -240,7 +281,7 @@ class AdminCommands(commands.Cog):
 
         language = LanguageService.normalize(target_language)
         if not LanguageService.validate(language):
-            await interaction.response.send_message("Target language must look like `ru`, `en`, or `pt-br`.", ephemeral=True)
+            await interaction.response.send_message(unsupported_language_message(target_language), ephemeral=True)
             return
 
         async with self.database.session() as session:
@@ -268,9 +309,13 @@ class AdminCommands(commands.Cog):
 
         await interaction.response.send_message(
             "\n".join(
-                f"{LanguageService.display_name(setting.target_language)} "
-                f"({LanguageService.normalize(setting.target_language)}) -> <@&{setting.role_id}>"
+                f"{format_language_mapping_label(setting.target_language)} -> <@&{setting.role_id}>"
                 for setting in settings
+            )
+            + (
+                "\n\nRemove unsupported mappings with /language_role_remove."
+                if any(not is_supported_language(setting.target_language) for setting in settings)
+                else ""
             ),
             ephemeral=True,
         )
@@ -287,10 +332,11 @@ class AdminCommands(commands.Cog):
         async with self.database.session() as session:
             await LanguageRoleService(session).remove_language_role(interaction.guild.id, language)
 
-        await interaction.response.send_message(
-            f"Language role for {LanguageService.display_name(language)} removed.",
-            ephemeral=True,
-        )
+        if is_supported_language(language):
+            message = f"Language role for {LanguageService.display_name(language)} removed."
+        else:
+            message = f"Removed legacy unsupported language mapping: {language}."
+        await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="language_setup_message", description="Post a persistent language setup dropdown")
     @app_commands.guild_only()
@@ -310,11 +356,21 @@ class AdminCommands(commands.Cog):
                     TranslationChannelSetting.guild_id == interaction.guild.id,
                 )
             )
-            languages = [LanguageService.normalize(language) for language in result.scalars().all()]
+            configured_languages = [LanguageService.normalize(language) for language in result.scalars().all()]
+
+        languages = []
+        for language in configured_languages:
+            if is_supported_language(language):
+                languages.append(language)
+            else:
+                logger.warning(
+                    "language_setup_unsupported_mapping_skipped",
+                    extra={"guild_id": interaction.guild.id, "target_language": language},
+                )
 
         if not languages:
             await interaction.response.send_message(
-                "No translation channels configured yet. Use /translation_channel_set first.",
+                "No supported translation channels configured yet. Use /translation_channel_set first.",
                 ephemeral=True,
             )
             return
