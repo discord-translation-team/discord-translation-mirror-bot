@@ -141,6 +141,8 @@ In the Discord Developer Portal:
   Disables matching legacy mirror routes.
 - `/translate_status`
   Shows feature flags, provider, model, configured channel and language role counts, monthly token counts, monthly character count, and database status.
+- `/setup_check`
+  Admin command that checks server permissions, language mappings, channel access, role hierarchy, and setup completeness.
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
 

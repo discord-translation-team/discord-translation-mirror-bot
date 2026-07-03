@@ -21,20 +21,61 @@ class FakeResponse:
         self.messages.append((content, ephemeral))
 
 
+class FakeFollowup:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, bool]] = []
+
+    async def send(self, content: str, ephemeral: bool = False, **kwargs) -> None:
+        self.messages.append((content, ephemeral))
+
+
+class FakePermissions:
+    def __init__(
+        self,
+        view_channel: bool = True,
+        send_messages: bool = True,
+        embed_links: bool = True,
+        read_message_history: bool = True,
+        manage_roles: bool = True,
+        manage_channels: bool = True,
+        use_application_commands: bool = True,
+    ) -> None:
+        self.view_channel = view_channel
+        self.send_messages = send_messages
+        self.embed_links = embed_links
+        self.read_message_history = read_message_history
+        self.manage_roles = manage_roles
+        self.manage_channels = manage_channels
+        self.use_application_commands = use_application_commands
+
+
 class FakeRole:
-    def __init__(self, role_id: int, name: str) -> None:
+    def __init__(self, role_id: int, name: str, position: int = 1) -> None:
         self.id = role_id
         self.name = name
         self.mention = f"@{name}"
+        self.position = position
+
+    def __gt__(self, other) -> bool:
+        return self.position > other.position
 
 
 class FakeMember:
-    def __init__(self, user_id: int, roles: list[FakeRole] | None = None, fail_permissions: bool = False) -> None:
+    def __init__(
+        self,
+        user_id: int,
+        roles: list[FakeRole] | None = None,
+        fail_permissions: bool = False,
+        guild_permissions: FakePermissions | None = None,
+        top_role: FakeRole | None = None,
+    ) -> None:
         self.id = user_id
         self.roles = roles or []
         self.added_roles: list[FakeRole] = []
         self.removed_roles: list[FakeRole] = []
         self.fail_permissions = fail_permissions
+        self.guild_permissions = guild_permissions or FakePermissions()
+        self.top_role = top_role or FakeRole(9999, "bot", position=100)
 
     async def add_roles(self, *roles: FakeRole, reason: str | None = None) -> None:
         if self.fail_permissions:
@@ -53,12 +94,26 @@ class FakeMember:
 
 
 class FakeGuild:
-    def __init__(self, guild_id: int = 111, roles: list[FakeRole] | None = None) -> None:
+    def __init__(
+        self,
+        guild_id: int = 111,
+        roles: list[FakeRole] | None = None,
+        channels: list[object] | None = None,
+        me: FakeMember | None = None,
+    ) -> None:
         self.id = guild_id
         self._roles = {role.id: role for role in roles or []}
+        self._channels = {channel.id: channel for channel in channels or []}
+        self.me = me or FakeMember(999)
 
     def get_role(self, role_id: int) -> FakeRole | None:
         return self._roles.get(role_id)
+
+    def get_channel(self, channel_id: int):
+        return self._channels.get(channel_id)
+
+    def get_member(self, member_id: int):
+        return self.me if self.me.id == member_id else None
 
 
 class FakeInteraction:
@@ -72,19 +127,28 @@ class FakeInteraction:
     ) -> None:
         self.guild = guild or FakeGuild(guild_id)
         self.user = user or FakeMember(user_id)
-        self.client = type("Client", (), {"database": database})()
+        self.client = type("Client", (), {"database": database, "user": type("User", (), {"id": 999})()})()
         self.response = FakeResponse()
+        self.followup = FakeFollowup()
 
 
 class FakeChannel:
-    id = 333
-    mention = "<#333>"
-
-    def __init__(self) -> None:
+    def __init__(self, channel_id: int = 333, permissions: FakePermissions | None = None) -> None:
+        self.id = channel_id
+        self.mention = f"<#{channel_id}>"
+        self._permissions = permissions or FakePermissions()
         self.sent: list[dict[str, object]] = []
 
     async def send(self, content: str | None = None, embed=None, view=None, allowed_mentions=None):
         self.sent.append({"content": content, "embed": embed, "view": view})
+
+    def permissions_for(self, member: FakeMember) -> FakePermissions:
+        return self._permissions
+
+
+class FakeProvider:
+    name = "mock"
+    model_name = "mock"
 
 
 class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
@@ -254,6 +318,84 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         option_labels = [option.label for option in select.options]
         self.assertEqual(option_values, ["ru"])
         self.assertEqual(option_labels, ["Russian"])
+
+    async def test_setup_check_detects_unsupported_mappings(self) -> None:
+        await self._add_translation_channel("eng")
+        await self._add_language_role("eg", 444)
+        role = FakeRole(444, "lang-ar")
+        channel = FakeChannel(999)
+        interaction = FakeInteraction(
+            self.database,
+            guild=FakeGuild(111, roles=[role], channels=[channel]),
+        )
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("❌ Not ready", report)
+        self.assertIn("ENG is unsupported. Remove it with /translation_channel_remove.", report)
+        self.assertIn("EG is unsupported. Remove it with /language_role_remove.", report)
+
+    async def test_setup_check_detects_missing_role_mapping_for_channel(self) -> None:
+        await self._add_translation_channel("ru")
+        channel = FakeChannel(999)
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, channels=[channel]))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("⚠️ Needs attention", report)
+        self.assertIn("Russian (ru) has a translation channel but no language role mapping.", report)
+
+    async def test_setup_check_detects_missing_channel_mapping_for_role(self) -> None:
+        await self._add_language_role("ar", 444)
+        role = FakeRole(444, "lang-ar")
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, roles=[role]))
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("❌ Not ready", report)
+        self.assertIn("Arabic (ar) has a language role but no translation channel.", report)
+
+    async def test_setup_check_reports_setup_message_not_tracked_and_ready(self) -> None:
+        await self._add_translation_channel("ru")
+        await self._add_language_role("ru", 444)
+        role = FakeRole(444, "lang-ru", position=1)
+        channel = FakeChannel(999)
+        bot_member = FakeMember(999, top_role=FakeRole(9999, "bot", position=100))
+        interaction = FakeInteraction(
+            self.database,
+            guild=FakeGuild(111, roles=[role], channels=[channel], me=bot_member),
+        )
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("✅ Ready", report)
+        self.assertIn("Setup message: not tracked. Re-run /language_setup_message after changing languages.", report)
+
+    async def test_setup_check_reports_critical_role_hierarchy(self) -> None:
+        await self._add_translation_channel("ru")
+        await self._add_language_role("ru", 444)
+        role = FakeRole(444, "lang-ru", position=50)
+        channel = FakeChannel(999)
+        bot_member = FakeMember(999, top_role=FakeRole(9999, "bot", position=10))
+        interaction = FakeInteraction(
+            self.database,
+            guild=FakeGuild(111, roles=[role], channels=[channel], me=bot_member),
+        )
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("❌ Not ready", report)
+        self.assertIn("Bot role must be above @lang-ru in Server Settings -> Roles.", report)
 
     async def test_selecting_language_creates_user_setting(self) -> None:
         await self._add_translation_channel("ru")
@@ -448,10 +590,10 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
             session.add(LanguageRoleSetting(guild_id=111, target_language=language, role_id=role_id))
             await session.commit()
 
-    def _cog(self) -> AdminCommands:
+    def _cog(self, translation_provider=None) -> AdminCommands:
         return AdminCommands(
             self.database,
-            translation_provider=None,
+            translation_provider=translation_provider,
             webhook_service=None,
             max_message_chars=1500,
             skip_messages_over_limit=True,

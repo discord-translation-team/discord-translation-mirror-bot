@@ -394,6 +394,30 @@ class AdminCommands(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="setup_check", description="Check Discord server setup for translation features")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_check(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        report, issue_count, warning_count = await self._build_setup_check_report(interaction)
+        logger.info(
+            "setup_check_ran",
+            extra={
+                "guild_id": interaction.guild.id,
+                "user_id": interaction.user.id,
+                "issue_count": issue_count,
+                "warning_count": warning_count,
+            },
+        )
+
+        pages = self._split_setup_check_report(report)
+        await interaction.response.send_message(pages[0], ephemeral=True)
+        for page in pages[1:]:
+            await interaction.followup.send(page, ephemeral=True)
+
     @app_commands.command(name="translate_setup", description="Create or update a translation mirror route")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -646,6 +670,215 @@ class AdminCommands(commands.Cog):
 
     def _provider_model(self) -> str:
         return self.translation_provider.model_name or self.translation_provider.name
+
+    async def _build_setup_check_report(self, interaction: discord.Interaction) -> tuple[str, int, int]:
+        guild = interaction.guild
+        if guild is None:
+            return "This command can only be used in a server.", 1, 0
+
+        async with self.database.session() as session:
+            channel_result = await session.execute(
+                select(TranslationChannelSetting).where(TranslationChannelSetting.guild_id == guild.id)
+            )
+            channel_settings = list(channel_result.scalars().all())
+            role_result = await session.execute(
+                select(LanguageRoleSetting).where(LanguageRoleSetting.guild_id == guild.id)
+            )
+            role_settings = list(role_result.scalars().all())
+
+        issues: list[str] = []
+        warnings: list[str] = []
+        lines: list[str] = []
+
+        provider_name = getattr(self.translation_provider, "name", None)
+        provider_model = getattr(self.translation_provider, "model_name", None) or provider_name
+        if not provider_name:
+            issues.append("Provider is not configured.")
+            provider_display = "missing"
+        else:
+            provider_display = f"{provider_name}/{provider_model}"
+
+        if not self.reaction_translation_enabled:
+            issues.append("Reaction translation is disabled.")
+
+        bot_member = self._setup_check_bot_member(interaction)
+        guild_permissions = getattr(bot_member, "guild_permissions", None)
+        can_manage_roles = bool(getattr(guild_permissions, "manage_roles", False))
+        can_manage_channels = bool(getattr(guild_permissions, "manage_channels", False))
+        can_use_app_commands = bool(getattr(guild_permissions, "use_application_commands", False))
+
+        if role_settings and not can_manage_roles:
+            issues.append("Bot cannot manage roles while language role mappings exist.")
+
+        supported_channel_languages = {
+            LanguageService.normalize(setting.target_language)
+            for setting in channel_settings
+            if is_supported_language(setting.target_language)
+        }
+        supported_role_languages = {
+            LanguageService.normalize(setting.target_language)
+            for setting in role_settings
+            if is_supported_language(setting.target_language)
+        }
+        if not supported_channel_languages:
+            issues.append("No supported translation channels configured.")
+
+        lines.append("**Setup Check**")
+        lines.append("")
+        lines.append("**Bot runtime/config**")
+        lines.append(f"- On-demand channel translation: {self._check_mark(self.on_demand_channel_translation_enabled)}")
+        lines.append(f"- Reaction translation: {self._check_mark(self.reaction_translation_enabled)}")
+        lines.append(f"- Context menu translation: {self._check_mark(self.context_menu_translation_enabled)}")
+        lines.append(f"- Legacy mirror mode: {'enabled' if self.legacy_mirror_mode_enabled else 'disabled'}")
+        lines.append(f"- Reaction emoji: `{self.reaction_translate_emoji}`")
+        lines.append(f"- Provider/model: `{provider_display}`")
+        lines.append("")
+
+        sendable_supported_channel_count = 0
+        lines.append("**Translation channels**")
+        if not channel_settings:
+            lines.append("- None configured.")
+        for setting in channel_settings:
+            language = LanguageService.normalize(setting.target_language)
+            supported = is_supported_language(language)
+            channel = guild.get_channel(setting.channel_id) if hasattr(guild, "get_channel") else None
+            channel_exists = channel is not None
+            permissions = channel.permissions_for(bot_member) if channel_exists and bot_member is not None else None
+            can_view = bool(getattr(permissions, "view_channel", False))
+            can_send = bool(getattr(permissions, "send_messages", False))
+            can_embed = bool(getattr(permissions, "embed_links", False))
+            can_read_history = bool(getattr(permissions, "read_message_history", False))
+            if supported and channel_exists and can_send:
+                sendable_supported_channel_count += 1
+            if not supported:
+                warnings.append(f"{language.upper()} is unsupported. Remove it with /translation_channel_remove.")
+            if supported and not channel_exists:
+                warnings.append(f"{LanguageService.display_name(language)} ({language}) channel does not exist.")
+            lines.append(
+                "- "
+                f"{format_language_mapping_label(language)} -> <#{setting.channel_id}>: "
+                f"exists {self._check_mark(channel_exists)}, "
+                f"view {self._check_mark(can_view)}, "
+                f"send {self._check_mark(can_send)}, "
+                f"embed {self._check_mark(can_embed)}, "
+                f"history {self._check_mark(can_read_history)}"
+            )
+        if supported_channel_languages and sendable_supported_channel_count == 0:
+            issues.append("Bot cannot send messages in any configured translation channel.")
+        lines.append("")
+
+        lines.append("**Language roles**")
+        if not role_settings:
+            lines.append("- None configured.")
+        bot_top_role = getattr(bot_member, "top_role", None)
+        for setting in role_settings:
+            language = LanguageService.normalize(setting.target_language)
+            role = guild.get_role(setting.role_id) if hasattr(guild, "get_role") else None
+            supported = is_supported_language(language)
+            if not supported:
+                warnings.append(f"{language.upper()} is unsupported. Remove it with /language_role_remove.")
+            if supported and role is None:
+                warnings.append(f"{LanguageService.display_name(language)} ({language}) role does not exist.")
+            if role is not None and bot_top_role is not None and not self._role_above(bot_top_role, role):
+                issues.append(f"Bot role must be above {role.mention} in Server Settings -> Roles.")
+            lines.append(
+                "- "
+                f"{format_language_mapping_label(language)} -> <@&{setting.role_id}>: "
+                f"exists {self._check_mark(role is not None)}"
+            )
+        lines.append("")
+
+        lines.append("**Bot role permissions**")
+        lines.append(f"- Manage Roles: {self._check_mark(can_manage_roles)}")
+        lines.append(f"- Manage Channels: {self._check_mark(can_manage_channels)}")
+        lines.append(f"- Use Application Commands: {self._check_mark(can_use_app_commands)}")
+        lines.append("")
+
+        lines.append("**Completeness**")
+        completeness_lines: list[str] = []
+        for language in sorted(supported_channel_languages - supported_role_languages):
+            warning = (
+                f"{LanguageService.display_name(language)} ({language}) has a translation channel "
+                "but no language role mapping."
+            )
+            warnings.append(warning)
+            completeness_lines.append(f"- {warning}")
+        for language in sorted(supported_role_languages - supported_channel_languages):
+            warning = (
+                f"{LanguageService.display_name(language)} ({language}) has a language role "
+                "but no translation channel."
+            )
+            warnings.append(warning)
+            completeness_lines.append(f"- {warning}")
+        if completeness_lines:
+            lines.extend(completeness_lines)
+        else:
+            lines.append("- Translation channels and language roles are paired.")
+        lines.append("")
+
+        lines.append("**Setup message**")
+        lines.append("- Setup message: not tracked. Re-run /language_setup_message after changing languages.")
+        lines.append("")
+
+        if issues:
+            summary = "❌ Not ready"
+        elif warnings:
+            summary = "⚠️ Needs attention"
+        else:
+            summary = "✅ Ready"
+        lines.insert(1, f"{summary} — {len(issues)} critical issue(s), {len(warnings)} warning(s)")
+
+        if issues:
+            lines.append("**Critical issues**")
+            lines.extend(f"- {issue}" for issue in issues)
+            lines.append("")
+        if warnings:
+            lines.append("**Warnings**")
+            lines.extend(f"- {warning}" for warning in warnings)
+
+        return "\n".join(lines), len(issues), len(warnings)
+
+    def _setup_check_bot_member(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return None
+        member = getattr(guild, "me", None)
+        if member is not None:
+            return member
+        client_user = getattr(interaction.client, "user", None)
+        if client_user is not None and hasattr(guild, "get_member"):
+            return guild.get_member(client_user.id)
+        return None
+
+    @staticmethod
+    def _check_mark(value: bool) -> str:
+        return "✅" if value else "❌"
+
+    @staticmethod
+    def _role_above(bot_role, target_role) -> bool:
+        try:
+            return bot_role > target_role
+        except TypeError:
+            return getattr(bot_role, "position", 0) > getattr(target_role, "position", 0)
+
+    @staticmethod
+    def _split_setup_check_report(report: str, limit: int = 1900) -> list[str]:
+        if len(report) <= limit:
+            return [report]
+        pages: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in report.splitlines():
+            line_len = len(line) + 1
+            if current and current_len + line_len > limit:
+                pages.append("\n".join(current))
+                current = []
+                current_len = 0
+            current.append(line)
+            current_len += line_len
+        if current:
+            pages.append("\n".join(current))
+        return pages
 
     def _on_demand_service(self, session) -> OnDemandTranslationService:
         service = OnDemandTranslationService(session, self.translation_provider, self.webhook_service)
