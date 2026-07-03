@@ -113,6 +113,7 @@ Or use an existing main channel:
 ```
 
 3. Move the bot role above `lang-*` roles if `/setup_check` warns.
+   `/setup_server` also creates, updates, or recreates the tracked language setup message in `#choose-language`.
 4. Run:
 
 ```text
@@ -177,7 +178,7 @@ In the Discord Developer Portal:
 - `/setup_check`
   Admin command that checks server permissions, language mappings, channel access, role hierarchy, and setup completeness.
 - `/setup_server languages source_channel`
-  Admin command that creates/reuses the standard translation category, channels, roles, mappings, and setup menu. `source_channel` is optional; when omitted, the bot creates or reuses `#global-chat`.
+  Admin command that creates/reuses the standard translation category, channels, roles, mappings, and tracked setup menu. `source_channel` is optional; when omitted, the bot creates or reuses `#global-chat`.
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
 
@@ -234,6 +235,8 @@ Admins can also create a persistent setup menu so users do not need to type `/se
 ```text
 /language_setup_message #choose-language
 ```
+
+`/language_setup_message` refreshes the tracked setup message for the server. It updates the existing dropdown when possible and recreates it if the tracked message or channel was deleted.
 
 Recommended setup flow:
 

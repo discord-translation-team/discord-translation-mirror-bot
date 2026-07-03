@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.commands.admin import AdminCommands, DEFAULT_SETUP_LANGUAGES, parse_setup_language_list
 from app.database import Database
 from app.languages import is_supported_language, normalize_language_code, suggest_language_code
-from app.models import LanguageRoleSetting, TranslationChannelSetting, UserLanguageSetting
+from app.models import LanguageRoleSetting, LanguageSetupMessage, TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
 from app.services.language_role_service import LanguageRoleService
 from app.ui.language_setup import LanguageSelect, build_language_select_options, build_language_setup_embed
@@ -187,9 +187,14 @@ class FakeChannel:
         self.overwrites = overwrites or {}
         self._permissions = permissions or FakePermissions()
         self.sent: list[dict[str, object]] = []
+        self.messages: dict[int, FakeMessage] = {}
+        self._next_message_id = 2000
 
     async def send(self, content: str | None = None, embed=None, view=None, allowed_mentions=None):
-        self.sent.append({"content": content, "embed": embed, "view": view})
+        message = FakeMessage(self._allocate_message_id(), self, embed=embed, view=view)
+        self.messages[message.id] = message
+        self.sent.append({"content": content, "embed": embed, "view": view, "message": message})
+        return message
 
     def permissions_for(self, member: FakeMember) -> FakePermissions:
         return self._permissions
@@ -197,6 +202,39 @@ class FakeChannel:
     async def edit(self, category=None, overwrites=None, reason: str | None = None):
         self.category = category
         self.overwrites = overwrites or {}
+
+    async def fetch_message(self, message_id: int):
+        message = self.messages.get(message_id)
+        if message is None:
+            raise FakeNotFound()
+        return message
+
+    def _allocate_message_id(self) -> int:
+        self._next_message_id += 1
+        return self._next_message_id
+
+
+class FakeNotFound(Exception):
+    pass
+
+
+class FakeMessage:
+    def __init__(self, message_id: int, channel: FakeChannel, embed=None, view=None) -> None:
+        self.id = message_id
+        self.channel = channel
+        self.embed = embed
+        self.view = view
+        self.edit_count = 0
+        self.deleted = False
+
+    async def edit(self, embed=None, view=None, allowed_mentions=None):
+        self.embed = embed
+        self.view = view
+        self.edit_count += 1
+
+    async def delete(self):
+        self.deleted = True
+        self.channel.messages.pop(self.id, None)
 
 
 class FakeProvider:
@@ -381,6 +419,75 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(option_values, ["ru"])
         self.assertEqual(option_labels, ["Russian"])
 
+    async def test_language_setup_message_creates_tracking_row(self) -> None:
+        await self._add_translation_channel("ru")
+        channel = FakeChannel()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, channels=[channel]))
+        cog = self._cog()
+
+        await cog.language_setup_message.callback(cog, interaction, channel)
+
+        self.assertEqual(interaction.response.messages[0], (f"Language setup message posted in {channel.mention}.", True))
+        async with self.database.session() as session:
+            setting = await session.get(LanguageSetupMessage, 1)
+
+        self.assertIsNotNone(setting)
+        self.assertEqual(setting.channel_id, channel.id)
+        self.assertEqual(setting.message_id, channel.sent[0]["message"].id)
+
+    async def test_language_setup_message_updates_existing_message_without_duplicate(self) -> None:
+        await self._add_translation_channel("ru")
+        channel = FakeChannel()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, channels=[channel]))
+        cog = self._cog()
+
+        await cog.language_setup_message.callback(cog, interaction, channel)
+        first_message = channel.sent[0]["message"]
+        await cog.language_setup_message.callback(cog, interaction, channel)
+
+        self.assertEqual(len(channel.sent), 1)
+        self.assertEqual(first_message.edit_count, 1)
+        self.assertEqual(interaction.response.messages[-1], (f"Language setup message updated in {channel.mention}.", True))
+
+    async def test_language_setup_message_recreates_missing_message(self) -> None:
+        await self._add_translation_channel("ru")
+        channel = FakeChannel()
+        interaction = FakeInteraction(self.database, guild=FakeGuild(111, channels=[channel]))
+        cog = self._cog()
+
+        await cog.language_setup_message.callback(cog, interaction, channel)
+        first_message_id = channel.sent[0]["message"].id
+        channel.messages.clear()
+        await cog.language_setup_message.callback(cog, interaction, channel)
+
+        self.assertEqual(len(channel.sent), 2)
+        self.assertEqual(interaction.response.messages[-1], (f"Language setup message recreated in {channel.mention}.", True))
+        async with self.database.session() as session:
+            setting = await session.get(LanguageSetupMessage, 1)
+
+        self.assertNotEqual(setting.message_id, first_message_id)
+
+    async def test_language_setup_message_recreates_when_channel_changes(self) -> None:
+        await self._add_translation_channel("ru")
+        interaction = FakeInteraction(self.database)
+        old_channel = FakeChannel(333, name="choose-language")
+        new_channel = FakeChannel(444, name="choose-language-2")
+        guild = FakeGuild(111, channels=[old_channel, new_channel])
+        interaction.guild = guild
+        cog = self._cog()
+
+        await cog.language_setup_message.callback(cog, interaction, old_channel)
+        old_message = old_channel.sent[0]["message"]
+        await cog.language_setup_message.callback(cog, interaction, new_channel)
+
+        self.assertTrue(old_message.deleted)
+        self.assertEqual(len(new_channel.sent), 1)
+        self.assertEqual(interaction.response.messages[-1], (f"Language setup message recreated in {new_channel.mention}.", True))
+        async with self.database.session() as session:
+            setting = await session.get(LanguageSetupMessage, 1)
+
+        self.assertEqual(setting.channel_id, new_channel.id)
+
     async def test_setup_server_creates_expected_items_and_mappings(self) -> None:
         guild = FakeGuild(111)
         interaction = FakeInteraction(self.database, guild=guild)
@@ -389,9 +496,11 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         await cog.setup_server.callback(cog, interaction, "ru,en")
 
         summary = interaction.followup.messages[0][0]
-        self.assertIn("Setup completed with warnings.", summary)
+        self.assertIn("Setup completed.", summary)
+        self.assertNotIn("Delete old setup messages manually", summary)
         self.assertIn("#choose-language", summary)
         self.assertIn("#global-chat", summary)
+        self.assertIn("Setup message: created", summary)
         self.assertIn("@lang-ru", summary)
         self.assertIn("@lang-en", summary)
         self.assertIn("translation channels: 2", summary)
@@ -409,9 +518,11 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         async with self.database.session() as session:
             channel_rows = (await session.execute(select(TranslationChannelSetting))).scalars().all()
             role_rows = (await session.execute(select(LanguageRoleSetting))).scalars().all()
+            setup_message = await session.get(LanguageSetupMessage, 1)
 
         self.assertEqual({row.target_language for row in channel_rows}, {"ru", "en"})
         self.assertEqual({row.target_language for row in role_rows}, {"ru", "en"})
+        self.assertEqual(setup_message.channel_id, setup_channel.id)
 
     async def test_setup_server_is_idempotent(self) -> None:
         guild = FakeGuild(111)
@@ -421,9 +532,12 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         await cog.setup_server.callback(cog, interaction, "ru,en")
         await cog.setup_server.callback(cog, interaction, "ru,en")
 
+        setup_channel = next(channel for channel in guild.text_channels if channel.name == "choose-language")
         self.assertEqual(len(guild.categories), 1)
         self.assertEqual(len([channel for channel in guild.text_channels if channel.name == "ru-translation"]), 1)
         self.assertEqual(len([role for role in guild.roles if role.name == "lang-ru"]), 1)
+        self.assertEqual(len(setup_channel.sent), 1)
+        self.assertEqual(setup_channel.sent[0]["message"].edit_count, 1)
         async with self.database.session() as session:
             channel_rows = (await session.execute(select(TranslationChannelSetting))).scalars().all()
             role_rows = (await session.execute(select(LanguageRoleSetting))).scalars().all()
@@ -535,7 +649,7 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("❌ Not ready", report)
         self.assertIn("Arabic (ar) has a language role but no translation channel.", report)
 
-    async def test_setup_check_reports_setup_message_not_tracked_and_ready(self) -> None:
+    async def test_setup_check_reports_setup_message_not_tracked(self) -> None:
         await self._add_translation_channel("ru")
         await self._add_language_role("ru", 444)
         role = FakeRole(444, "lang-ru", position=1)
@@ -550,9 +664,53 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         await cog.setup_check.callback(cog, interaction)
 
         report = interaction.response.messages[0][0]
-        self.assertIn("✅ Ready", report)
-        self.assertIn("Setup message: not tracked. Re-run /language_setup_message after changing languages.", report)
+        self.assertIn("⚠️ Needs attention", report)
+        self.assertIn("Tracked: ❌", report)
+        self.assertIn("Setup message is not tracked. Run /language_setup_message channel:#choose-language.", report)
         self.assertIn("Source channels are not restricted. Bot can translate from any visible channel.", report)
+
+    async def test_setup_check_reports_tracked_missing_setup_message(self) -> None:
+        await self._add_translation_channel("ru")
+        await self._add_language_role("ru", 444)
+        role = FakeRole(444, "lang-ru", position=1)
+        channel = FakeChannel(999)
+        async with self.database.session() as session:
+            session.add(LanguageSetupMessage(guild_id=111, channel_id=channel.id, message_id=12345))
+            await session.commit()
+        interaction = FakeInteraction(
+            self.database,
+            guild=FakeGuild(111, roles=[role], channels=[channel]),
+        )
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("Tracked: ✅", report)
+        self.assertIn("Message exists: ❌", report)
+        self.assertIn("Tracked setup message is missing. Run /language_setup_message channel:#choose-language to recreate it.", report)
+
+    async def test_setup_check_reports_tracked_existing_setup_message(self) -> None:
+        await self._add_translation_channel("ru")
+        await self._add_language_role("ru", 444)
+        role = FakeRole(444, "lang-ru", position=1)
+        channel = FakeChannel(999)
+        message = await channel.send(embed=None, view=None)
+        async with self.database.session() as session:
+            session.add(LanguageSetupMessage(guild_id=111, channel_id=channel.id, message_id=message.id))
+            await session.commit()
+        interaction = FakeInteraction(
+            self.database,
+            guild=FakeGuild(111, roles=[role], channels=[channel]),
+        )
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_check.callback(cog, interaction)
+
+        report = interaction.response.messages[0][0]
+        self.assertIn("✅ Ready", report)
+        self.assertIn("Tracked: ✅", report)
+        self.assertIn("Message exists: ✅", report)
 
     async def test_setup_check_reports_critical_role_hierarchy(self) -> None:
         await self._add_translation_channel("ru")

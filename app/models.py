@@ -91,6 +91,18 @@ class LanguageRoleSetting(TimestampMixin, Base):
     role_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class LanguageSetupMessage(TimestampMixin, Base):
+    __tablename__ = "language_setup_messages"
+    __table_args__ = (
+        UniqueConstraint("guild_id", name="uq_language_setup_message_guild"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class OnDemandTranslationMapping(TimestampMixin, Base):
     __tablename__ = "on_demand_translation_mappings"
     __table_args__ = (

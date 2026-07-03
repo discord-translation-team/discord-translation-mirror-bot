@@ -16,16 +16,17 @@ from app.models import (
     ChannelRoute,
     GuildUsageMonthly,
     LanguageRoleSetting,
+    LanguageSetupMessage,
     TranslationChannelSetting,
     UserLanguageSetting,
 )
 from app.services.language_service import LanguageService
 from app.services.language_role_service import LanguageRoleService
+from app.services.language_setup_message_service import LanguageSetupMessageService
 from app.services.on_demand_translation_service import OnDemandTranslationService
 from app.services.webhook_service import WebhookService
 from app.translation.base import TranslationProvider, TranslationProviderError
 from app.translation.output_cleaner import clean_translation_output
-from app.ui.language_setup import LanguageSetupView, build_language_select_options, build_language_setup_embed
 
 logger = logging.getLogger(__name__)
 
@@ -375,22 +376,8 @@ class AdminCommands(commands.Cog):
             return
 
         async with self.database.session() as session:
-            result = await session.execute(
-                select(TranslationChannelSetting.target_language).where(
-                    TranslationChannelSetting.guild_id == interaction.guild.id,
-                )
-            )
-            configured_languages = [LanguageService.normalize(language) for language in result.scalars().all()]
-
-        languages = []
-        for language in configured_languages:
-            if is_supported_language(language):
-                languages.append(language)
-            else:
-                logger.warning(
-                    "language_setup_unsupported_mapping_skipped",
-                    extra={"guild_id": interaction.guild.id, "target_language": language},
-                )
+            service = LanguageSetupMessageService(session)
+            languages = await service.supported_configured_languages(interaction.guild.id)
 
         if not languages:
             await interaction.response.send_message(
@@ -399,22 +386,16 @@ class AdminCommands(commands.Cog):
             )
             return
 
-        options = build_language_select_options(languages)
-        await channel.send(
-            embed=build_language_setup_embed(),
-            view=LanguageSetupView(options),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        logger.info(
-            "language_setup_message_posted",
-            extra={
-                "guild_id": interaction.guild.id,
-                "channel_id": channel.id,
-                "configured_language_count": len(options),
-            },
-        )
+        async with self.database.session() as session:
+            result = await LanguageSetupMessageService(session).refresh_setup_message(interaction.guild, channel)
+
+        action = {
+            LanguageSetupMessageService.CREATED: "posted",
+            LanguageSetupMessageService.UPDATED: "updated",
+            LanguageSetupMessageService.RECREATED: "recreated",
+        }[result.status]
         await interaction.response.send_message(
-            f"Language setup message posted in {channel.mention}.",
+            f"Language setup message {action} in {channel.mention}.",
             ephemeral=True,
         )
 
@@ -836,13 +817,11 @@ class AdminCommands(commands.Cog):
                     },
                 )
 
-        setup_languages = list(channel_by_language.keys())
+        setup_message_status = "not updated"
         try:
-            await setup_channel.send(
-                embed=build_language_setup_embed(),
-                view=LanguageSetupView(build_language_select_options(setup_languages)),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            async with self.database.session() as session:
+                refresh_result = await LanguageSetupMessageService(session).refresh_setup_message(guild, setup_channel)
+                setup_message_status = refresh_result.status
         except discord.DiscordException as exc:
             warnings.append("Could not post the setup message. Check bot Send Messages permission in #choose-language.")
             logger.warning(
@@ -861,7 +840,6 @@ class AdminCommands(commands.Cog):
                     "Move the bot role above all lang-* roles in Server Settings -> Roles, otherwise role assignment will fail."
                 )
 
-        warnings.append("Delete old setup messages manually if duplicated.")
         return self._format_setup_server_summary(
             category,
             category_created,
@@ -874,6 +852,7 @@ class AdminCommands(commands.Cog):
             channel_created_by_language,
             roles_by_language,
             role_created_by_language,
+            setup_message_status,
             warnings,
         )
 
@@ -1031,6 +1010,7 @@ class AdminCommands(commands.Cog):
         channel_created_by_language: dict[str, bool],
         roles_by_language: dict[str, object | None],
         role_created_by_language: dict[str, bool],
+        setup_message_status: str,
         warnings: list[str],
     ) -> str:
         lines = ["Setup completed with warnings." if warnings else "Setup completed."]
@@ -1077,6 +1057,13 @@ class AdminCommands(commands.Cog):
             lines.extend(["", "Warnings:"])
             lines.extend(f"⚠️ {warning}" for warning in warnings)
 
+        setup_status = {
+            LanguageSetupMessageService.CREATED: "created",
+            LanguageSetupMessageService.UPDATED: "updated",
+            LanguageSetupMessageService.RECREATED: "recreated",
+        }.get(setup_message_status, setup_message_status)
+        lines.extend(["", f"Setup message: {setup_status} in {setup_channel.mention}."])
+
         lines.extend(
             [
                 "",
@@ -1102,6 +1089,10 @@ class AdminCommands(commands.Cog):
                 select(LanguageRoleSetting).where(LanguageRoleSetting.guild_id == guild.id)
             )
             role_settings = list(role_result.scalars().all())
+            setup_message_result = await session.execute(
+                select(LanguageSetupMessage).where(LanguageSetupMessage.guild_id == guild.id)
+            )
+            setup_message = setup_message_result.scalar_one_or_none()
 
         issues: list[str] = []
         warnings: list[str] = []
@@ -1234,7 +1225,9 @@ class AdminCommands(commands.Cog):
         lines.append("")
 
         lines.append("**Setup message**")
-        lines.append("- Setup message: not tracked. Re-run /language_setup_message after changing languages.")
+        setup_message_lines, setup_message_warnings = await self._setup_message_check_lines(guild, setup_message)
+        lines.extend(setup_message_lines)
+        warnings.extend(setup_message_warnings)
         lines.append("")
 
         lines.append("**Source channels**")
@@ -1258,6 +1251,64 @@ class AdminCommands(commands.Cog):
             lines.extend(f"- {warning}" for warning in warnings)
 
         return "\n".join(lines), len(issues), len(warnings)
+
+    async def _setup_message_check_lines(self, guild, setup_message) -> tuple[list[str], list[str]]:
+        if setup_message is None:
+            warning = "Setup message is not tracked. Run /language_setup_message channel:#choose-language."
+            return [f"- Tracked: {self._check_mark(False)}"], [warning]
+
+        channel = guild.get_channel(setup_message.channel_id) if hasattr(guild, "get_channel") else None
+        channel_exists = channel is not None
+        message_exists = False
+        warnings = []
+
+        if channel is None:
+            warning = "Tracked setup message channel is missing. Run /language_setup_message channel:#choose-language to recreate it."
+            warnings.append(warning)
+            logger.warning(
+                "language_setup_message_missing",
+                extra={
+                    "guild_id": guild.id,
+                    "channel_id": setup_message.channel_id,
+                    "message_id": setup_message.message_id,
+                },
+            )
+        else:
+            try:
+                await channel.fetch_message(setup_message.message_id)
+                message_exists = True
+            except discord.NotFound:
+                warning = "Tracked setup message is missing. Run /language_setup_message channel:#choose-language to recreate it."
+                warnings.append(warning)
+                logger.warning(
+                    "language_setup_message_missing",
+                    extra={
+                        "guild_id": guild.id,
+                        "channel_id": setup_message.channel_id,
+                        "message_id": setup_message.message_id,
+                    },
+                )
+            except Exception as exc:
+                warning = "Tracked setup message is missing. Run /language_setup_message channel:#choose-language to recreate it."
+                warnings.append(warning)
+                logger.warning(
+                    "language_setup_message_missing",
+                    extra={
+                        "guild_id": guild.id,
+                        "channel_id": setup_message.channel_id,
+                        "message_id": setup_message.message_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+
+        return (
+            [
+                f"- Tracked: {self._check_mark(True)}",
+                f"- Channel exists: {self._check_mark(channel_exists)} <#{setup_message.channel_id}>",
+                f"- Message exists: {self._check_mark(message_exists)}",
+            ],
+            warnings,
+        )
 
     def _setup_check_bot_member(self, interaction: discord.Interaction):
         guild = interaction.guild
