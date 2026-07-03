@@ -90,6 +90,39 @@ python -m app.bot
 
 On startup the bot creates local SQLite tables when using the default `DATABASE_URL` and syncs slash commands.
 
+## Quick Setup
+
+1. Invite the bot with these permissions:
+   - Manage Channels
+   - Manage Roles
+   - Send Messages
+   - Embed Links
+   - Read Message History
+   - Add Reactions
+   - Use Application Commands
+2. Run:
+
+```text
+/setup_server languages:ru,en,fr,ar,tr,es,uk
+```
+
+Or use an existing main channel:
+
+```text
+/setup_server languages:ru,en,fr,ar,tr,es,uk source_channel:#general
+```
+
+3. Move the bot role above `lang-*` roles if `/setup_check` warns.
+4. Run:
+
+```text
+/setup_check
+```
+
+5. Users open `#choose-language`, select a language, then react with `🌐` in any channel the bot can read.
+
+The `source_channel` option is optional. Users can react with `🌐` in any channel where the bot has View Channel, Read Message History, and access to reaction events. `#global-chat` is only a convenience channel created by `/setup_server` when no existing source channel is provided.
+
 ## Railway PostgreSQL
 
 For local development, `DATABASE_URL` can stay as:
@@ -143,6 +176,8 @@ In the Discord Developer Portal:
   Shows feature flags, provider, model, configured channel and language role counts, monthly token counts, monthly character count, and database status.
 - `/setup_check`
   Admin command that checks server permissions, language mappings, channel access, role hierarchy, and setup completeness.
+- `/setup_server languages source_channel`
+  Admin command that creates/reuses the standard translation category, channels, roles, mappings, and setup menu. `source_channel` is optional; when omitted, the bot creates or reuses `#global-chat`.
 - `/translate_test text target_language`
   Returns a translated preview using the currently selected provider without saving anything.
 

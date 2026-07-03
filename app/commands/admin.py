@@ -29,6 +29,11 @@ from app.ui.language_setup import LanguageSetupView, build_language_select_optio
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SETUP_LANGUAGES = ["ru", "en", "fr", "ar", "tr", "es", "uk"]
+TRANSLATIONS_CATEGORY_NAME = "🌐 Translations"
+SETUP_CHANNEL_NAME = "choose-language"
+SOURCE_CHANNEL_NAME = "global-chat"
+
 
 def unsupported_language_message(language: str) -> str:
     suggestion = suggest_language_code(language)
@@ -53,6 +58,25 @@ def format_language_mapping_label(language: str) -> str:
     if is_supported_language(normalized):
         return f"{LanguageService.display_name(normalized)} ({normalized})"
     return f"{normalized.upper()} (unsupported)"
+
+
+def parse_setup_language_list(languages: str | None) -> list[str]:
+    if languages is None or not languages.strip():
+        return list(DEFAULT_SETUP_LANGUAGES)
+
+    parsed: list[str] = []
+    seen: set[str] = set()
+    for raw_language in languages.split(","):
+        if not raw_language.strip():
+            continue
+        language = LanguageService.normalize(raw_language)
+        if not LanguageService.validate(language):
+            raise ValueError(unsupported_language_message(raw_language))
+        if language not in seen:
+            parsed.append(language)
+            seen.add(language)
+
+    return parsed or list(DEFAULT_SETUP_LANGUAGES)
 
 
 class AdminCommands(commands.Cog):
@@ -394,6 +418,58 @@ class AdminCommands(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="setup_server", description="Create channels, roles, mappings, and setup menu")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_server(
+        self,
+        interaction: discord.Interaction,
+        languages: str = "",
+        source_channel: discord.TextChannel = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        try:
+            language_codes = parse_setup_language_list(languages)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        logger.info(
+            "setup_server_started",
+            extra={
+                "guild_id": interaction.guild.id,
+                "user_id": interaction.user.id,
+                "language_count": len(language_codes),
+            },
+        )
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            summary = await self._setup_server(interaction, language_codes, source_channel)
+        except (discord.Forbidden, PermissionError):
+            logger.warning(
+                "setup_server_failed_permissions",
+                extra={"guild_id": interaction.guild.id, "user_id": interaction.user.id},
+            )
+            await interaction.followup.send(
+                "I need Manage Channels to create channels and permissions.",
+                ephemeral=True,
+            )
+            return
+
+        logger.info(
+            "setup_server_completed",
+            extra={
+                "guild_id": interaction.guild.id,
+                "user_id": interaction.user.id,
+                "language_count": len(language_codes),
+            },
+        )
+        await interaction.followup.send(summary, ephemeral=True)
+
     @app_commands.command(name="setup_check", description="Check Discord server setup for translation features")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -671,6 +747,347 @@ class AdminCommands(commands.Cog):
     def _provider_model(self) -> str:
         return self.translation_provider.model_name or self.translation_provider.name
 
+    async def _setup_server(
+        self,
+        interaction: discord.Interaction,
+        language_codes: list[str],
+        source_channel: discord.TextChannel = None,
+    ) -> str:
+        guild = interaction.guild
+        if guild is None:
+            return "This command can only be used in a server."
+
+        bot_member = self._setup_check_bot_member(interaction)
+        guild_permissions = getattr(bot_member, "guild_permissions", None)
+        can_manage_channels = bool(getattr(guild_permissions, "manage_channels", False))
+        can_manage_roles = bool(getattr(guild_permissions, "manage_roles", False))
+
+        if not can_manage_channels:
+            logger.warning(
+                "setup_server_failed_permissions",
+                extra={"guild_id": guild.id, "missing_permission": "manage_channels"},
+            )
+            return "I need Manage Channels to create channels and permissions."
+
+        warnings: list[str] = []
+        if not can_manage_roles:
+            warnings.append("I need Manage Roles to create/sync language roles.")
+
+        category, category_created = await self._get_or_create_category(guild)
+        setup_channel, setup_channel_created = await self._get_or_create_text_channel(
+            guild,
+            SETUP_CHANNEL_NAME,
+            category,
+            self._setup_channel_overwrites(guild, bot_member),
+        )
+        if source_channel is None:
+            source_channel, source_channel_created = await self._get_or_create_text_channel(
+                guild,
+                SOURCE_CHANNEL_NAME,
+                category,
+                self._source_channel_overwrites(guild, bot_member),
+            )
+            source_channel_mode = "managed"
+        else:
+            source_channel_created = False
+            source_channel_mode = "existing"
+            warnings.extend(self._source_channel_permission_warnings(source_channel, bot_member))
+
+        roles_by_language: dict[str, object | None] = {}
+        role_created_by_language: dict[str, bool] = {}
+        if can_manage_roles:
+            for language in language_codes:
+                role, created, warning = await self._get_or_create_language_role(guild, language)
+                roles_by_language[language] = role
+                role_created_by_language[language] = created
+                if warning:
+                    warnings.append(warning)
+        else:
+            for language in language_codes:
+                roles_by_language[language] = self._find_role(guild, f"lang-{language}")
+                role_created_by_language[language] = False
+
+        channel_by_language: dict[str, object] = {}
+        channel_created_by_language: dict[str, bool] = {}
+        for language in language_codes:
+            role = roles_by_language.get(language)
+            channel, created = await self._get_or_create_text_channel(
+                guild,
+                f"{language}-translation",
+                category,
+                self._translation_channel_overwrites(guild, bot_member, role),
+            )
+            channel_by_language[language] = channel
+            channel_created_by_language[language] = created
+
+        async with self.database.session() as session:
+            for language, channel in channel_by_language.items():
+                await self._save_translation_channel_mapping(session, guild.id, language, channel.id)
+                role = roles_by_language.get(language)
+                if role is not None and can_manage_roles:
+                    await LanguageRoleService(session).set_language_role(guild.id, language, role.id)
+                logger.info(
+                    "setup_server_mapping_saved",
+                    extra={
+                        "guild_id": guild.id,
+                        "target_language": language,
+                        "channel_id": channel.id,
+                        "role_id": role.id if role is not None else None,
+                    },
+                )
+
+        setup_languages = list(channel_by_language.keys())
+        try:
+            await setup_channel.send(
+                embed=build_language_setup_embed(),
+                view=LanguageSetupView(build_language_select_options(setup_languages)),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.DiscordException as exc:
+            warnings.append("Could not post the setup message. Check bot Send Messages permission in #choose-language.")
+            logger.warning(
+                "setup_server_setup_message_failed",
+                extra={"guild_id": guild.id, "error_type": type(exc).__name__},
+            )
+
+        bot_top_role = getattr(bot_member, "top_role", None)
+        if can_manage_roles and bot_top_role is not None:
+            hierarchy_problem = any(
+                role is not None and not self._role_above(bot_top_role, role)
+                for role in roles_by_language.values()
+            )
+            if hierarchy_problem:
+                warnings.append(
+                    "Move the bot role above all lang-* roles in Server Settings -> Roles, otherwise role assignment will fail."
+                )
+
+        warnings.append("Delete old setup messages manually if duplicated.")
+        return self._format_setup_server_summary(
+            category,
+            category_created,
+            setup_channel,
+            setup_channel_created,
+            source_channel,
+            source_channel_created,
+            source_channel_mode,
+            channel_by_language,
+            channel_created_by_language,
+            roles_by_language,
+            role_created_by_language,
+            warnings,
+        )
+
+    async def _get_or_create_category(self, guild):
+        existing = self._find_category(guild, TRANSLATIONS_CATEGORY_NAME)
+        if existing is not None:
+            logger.info("setup_server_reused_category", extra={"guild_id": guild.id, "category_id": existing.id})
+            return existing, False
+        category = await guild.create_category(TRANSLATIONS_CATEGORY_NAME, reason="Translation server setup")
+        logger.info("setup_server_created_category", extra={"guild_id": guild.id, "category_id": category.id})
+        return category, True
+
+    async def _get_or_create_text_channel(self, guild, name: str, category, overwrites: dict):
+        existing = self._find_text_channel(guild, name)
+        if existing is not None:
+            if hasattr(existing, "edit"):
+                await existing.edit(category=category, overwrites=overwrites, reason="Translation server setup")
+            logger.info("setup_server_reused_channel", extra={"guild_id": guild.id, "channel_id": existing.id})
+            return existing, False
+        channel = await guild.create_text_channel(
+            name,
+            category=category,
+            overwrites=overwrites,
+            reason="Translation server setup",
+        )
+        logger.info("setup_server_created_channel", extra={"guild_id": guild.id, "channel_id": channel.id})
+        return channel, True
+
+    async def _get_or_create_language_role(self, guild, language: str):
+        role_name = f"lang-{language}"
+        existing = self._find_role(guild, role_name)
+        if existing is not None:
+            logger.info("setup_server_reused_role", extra={"guild_id": guild.id, "role_id": existing.id})
+            return existing, False, None
+        try:
+            role = await guild.create_role(
+                name=role_name,
+                permissions=discord.Permissions.none(),
+                reason="Translation server setup",
+            )
+        except (discord.Forbidden, PermissionError) as exc:
+            logger.warning(
+                "setup_server_failed_permissions",
+                extra={"guild_id": guild.id, "missing_permission": "manage_roles", "error_type": type(exc).__name__},
+            )
+            return None, False, f"I could not create @{role_name}. Check my Manage Roles permission and role hierarchy."
+        logger.info("setup_server_created_role", extra={"guild_id": guild.id, "role_id": role.id})
+        return role, True, None
+
+    async def _save_translation_channel_mapping(self, session, guild_id: int, language: str, channel_id: int) -> None:
+        result = await session.execute(
+            select(TranslationChannelSetting).where(
+                TranslationChannelSetting.guild_id == guild_id,
+                func.lower(func.trim(TranslationChannelSetting.target_language)) == language,
+            )
+        )
+        setting = result.scalar_one_or_none()
+        if setting is None:
+            session.add(
+                TranslationChannelSetting(
+                    guild_id=guild_id,
+                    target_language=language,
+                    channel_id=channel_id,
+                )
+            )
+        else:
+            setting.target_language = language
+            setting.channel_id = channel_id
+        await session.commit()
+
+    def _setup_channel_overwrites(self, guild, bot_member) -> dict:
+        return {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=False,
+                read_message_history=True,
+            ),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                read_message_history=True,
+            ),
+        }
+
+    def _source_channel_overwrites(self, guild, bot_member) -> dict:
+        return {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                add_reactions=True,
+            ),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                read_message_history=True,
+                add_reactions=True,
+            ),
+        }
+
+    def _source_channel_permission_warnings(self, source_channel, bot_member) -> list[str]:
+        permissions = source_channel.permissions_for(bot_member) if bot_member is not None else None
+        warnings = []
+        checks = [
+            ("View Channel", bool(getattr(permissions, "view_channel", False))),
+            ("Read Message History", bool(getattr(permissions, "read_message_history", False))),
+            ("Add Reactions", bool(getattr(permissions, "add_reactions", False))),
+        ]
+        for label, has_permission in checks:
+            if not has_permission:
+                warnings.append(f"Bot is missing {label} in {source_channel.mention}.")
+        return warnings
+
+    def _translation_channel_overwrites(self, guild, bot_member, role) -> dict:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                read_message_history=True,
+            ),
+        }
+        if role is not None:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=True,
+            )
+        return overwrites
+
+    @staticmethod
+    def _find_category(guild, name: str):
+        return next((category for category in getattr(guild, "categories", []) if category.name == name), None)
+
+    @staticmethod
+    def _find_text_channel(guild, name: str):
+        return next((channel for channel in getattr(guild, "text_channels", []) if channel.name == name), None)
+
+    @staticmethod
+    def _find_role(guild, name: str):
+        return next((role for role in getattr(guild, "roles", []) if role.name == name), None)
+
+    def _format_setup_server_summary(
+        self,
+        category,
+        category_created: bool,
+        setup_channel,
+        setup_channel_created: bool,
+        source_channel,
+        source_channel_created: bool,
+        source_channel_mode: str,
+        channel_by_language: dict[str, object],
+        channel_created_by_language: dict[str, bool],
+        roles_by_language: dict[str, object | None],
+        role_created_by_language: dict[str, bool],
+        warnings: list[str],
+    ) -> str:
+        lines = ["Setup completed with warnings." if warnings else "Setup completed."]
+        lines.extend(["", "Category:", f"{self._check_mark(True)} {category.name} ({'created' if category_created else 'reused'})"])
+        lines.extend(["", "Channels:"])
+        lines.append(
+            f"{self._check_mark(True)} #{setup_channel.name} {setup_channel.mention} "
+            f"({'created' if setup_channel_created else 'reused'})"
+        )
+        if source_channel_mode == "existing":
+            lines.append(f"Source channel: using existing #{source_channel.name} {source_channel.mention}")
+        else:
+            lines.append(
+                f"Source channel: {'created' if source_channel_created else 'reused'} "
+                f"#{source_channel.name} {source_channel.mention}"
+            )
+        for language, channel in channel_by_language.items():
+            lines.append(
+                f"{self._check_mark(True)} #{channel.name} {channel.mention} "
+                f"({'created' if channel_created_by_language[language] else 'reused'})"
+            )
+
+        lines.extend(["", "Roles:"])
+        for language, role in roles_by_language.items():
+            if role is None:
+                lines.append(f"❌ @lang-{language} (not created)")
+            else:
+                lines.append(
+                    f"{self._check_mark(True)} {role.mention} "
+                    f"({'created' if role_created_by_language[language] else 'reused'})"
+                )
+
+        mapped_role_count = sum(1 for role in roles_by_language.values() if role is not None)
+        lines.extend(
+            [
+                "",
+                "Mappings:",
+                f"{self._check_mark(True)} translation channels: {len(channel_by_language)}",
+                f"{self._check_mark(True)} language roles: {mapped_role_count}",
+            ]
+        )
+
+        if warnings:
+            lines.extend(["", "Warnings:"])
+            lines.extend(f"⚠️ {warning}" for warning in warnings)
+
+        lines.extend(
+            [
+                "",
+                "Next:",
+                "1. Run /setup_check",
+                f"2. Users choose language in {setup_channel.mention}",
+                f"3. Users react {self.reaction_translate_emoji} in {source_channel.mention}",
+            ]
+        )
+        return "\n".join(lines)
+
     async def _build_setup_check_report(self, interaction: discord.Interaction) -> tuple[str, int, int]:
         guild = interaction.guild
         if guild is None:
@@ -818,6 +1235,10 @@ class AdminCommands(commands.Cog):
 
         lines.append("**Setup message**")
         lines.append("- Setup message: not tracked. Re-run /language_setup_message after changing languages.")
+        lines.append("")
+
+        lines.append("**Source channels**")
+        lines.append("- Source channels are not restricted. Bot can translate from any visible channel.")
         lines.append("")
 
         if issues:
