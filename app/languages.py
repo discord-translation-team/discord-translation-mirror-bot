@@ -22,6 +22,7 @@ SUPPORTED_LANGUAGES: dict[str, str] = {
     "vi": "Vietnamese",
     "nl": "Dutch",
     "fa": "Persian",
+    "ro": "Romanian",
 }
 
 LANGUAGE_CODE_SUGGESTIONS: dict[str, str] = {
@@ -63,6 +64,10 @@ LANGUAGE_CODE_SUGGESTIONS: dict[str, str] = {
     "dutch": "nl",
     "persian": "fa",
     "farsi": "fa",
+    "romanian": "ro",
+    "romana": "ro",
+    "română": "ro",
+    "roumanian": "ro",
 }
 
 

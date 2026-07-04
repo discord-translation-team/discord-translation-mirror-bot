@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.commands.admin import AdminCommands, DEFAULT_SETUP_LANGUAGES, parse_setup_language_list
 from app.database import Database
-from app.languages import is_supported_language, normalize_language_code, suggest_language_code
+from app.languages import get_language_display_name, is_supported_language, normalize_language_code, suggest_language_code
 from app.models import LanguageRoleSetting, LanguageSetupMessage, TranslationChannelSetting, UserLanguageSetting
 from app.services.language_service import LanguageService
 from app.services.language_role_service import LanguageRoleService
@@ -256,6 +256,7 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
     def test_language_display_names(self) -> None:
         self.assertEqual(LanguageService.display_name("ru"), "Russian")
         self.assertEqual(LanguageService.display_name(" EN "), "English")
+        self.assertEqual(get_language_display_name("ro"), "Romanian")
         self.assertEqual(LanguageService.display_name("sv"), "SV")
 
     def test_language_code_normalization(self) -> None:
@@ -267,6 +268,7 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
     def test_supported_language_allowlist(self) -> None:
         self.assertTrue(is_supported_language("en"))
         self.assertTrue(is_supported_language("ar"))
+        self.assertTrue(is_supported_language("ro"))
         self.assertFalse(is_supported_language("eng"))
         self.assertFalse(is_supported_language("eg"))
         self.assertFalse(is_supported_language("ua"))
@@ -278,11 +280,15 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(suggest_language_code("ua"), "uk")
         self.assertEqual(suggest_language_code("ukrainian"), "uk")
         self.assertEqual(suggest_language_code("farsi"), "fa")
+        self.assertEqual(suggest_language_code("romanian"), "ro")
+        self.assertEqual(suggest_language_code("română"), "ro")
+        self.assertEqual(suggest_language_code("romana"), "ro")
 
     def test_setup_server_language_parser_defaults_and_deduplicates(self) -> None:
         self.assertEqual(parse_setup_language_list(None), DEFAULT_SETUP_LANGUAGES)
         self.assertEqual(parse_setup_language_list("  "), DEFAULT_SETUP_LANGUAGES)
         self.assertEqual(parse_setup_language_list("ru,en,RU, pt-BR "), ["ru", "en", "pt"])
+        self.assertEqual(parse_setup_language_list("ro,RO"), ["ro"])
 
     def test_setup_server_language_parser_rejects_unsupported_with_suggestion(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unsupported language code: eng. Use en for English."):
@@ -523,6 +529,26 @@ class LanguageSetupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row.target_language for row in channel_rows}, {"ru", "en"})
         self.assertEqual({row.target_language for row in role_rows}, {"ru", "en"})
         self.assertEqual(setup_message.channel_id, setup_channel.id)
+
+    async def test_setup_server_creates_romanian_items_and_mappings(self) -> None:
+        guild = FakeGuild(111)
+        interaction = FakeInteraction(self.database, guild=guild)
+        cog = self._cog(FakeProvider())
+
+        await cog.setup_server.callback(cog, interaction, "ro")
+
+        summary = interaction.followup.messages[0][0]
+        self.assertIn("@lang-ro", summary)
+        self.assertIn("translation channels: 1", summary)
+        self.assertIn("language roles: 1", summary)
+        self.assertIn("ro-translation", [channel.name for channel in guild.text_channels])
+        self.assertIn("lang-ro", [role.name for role in guild.roles])
+        async with self.database.session() as session:
+            channel_rows = (await session.execute(select(TranslationChannelSetting))).scalars().all()
+            role_rows = (await session.execute(select(LanguageRoleSetting))).scalars().all()
+
+        self.assertEqual({row.target_language for row in channel_rows}, {"ro"})
+        self.assertEqual({row.target_language for row in role_rows}, {"ro"})
 
     async def test_setup_server_is_idempotent(self) -> None:
         guild = FakeGuild(111)

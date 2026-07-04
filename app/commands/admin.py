@@ -30,7 +30,7 @@ from app.translation.output_cleaner import clean_translation_output
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SETUP_LANGUAGES = ["ru", "en", "fr", "ar", "tr", "es", "uk"]
+DEFAULT_SETUP_LANGUAGES = ["ru", "en", "fr", "ar", "tr", "es", "uk", "ro"]
 TRANSLATIONS_CATEGORY_NAME = "🌐 Translations"
 SETUP_CHANNEL_NAME = "choose-language"
 SOURCE_CHANNEL_NAME = "global-chat"

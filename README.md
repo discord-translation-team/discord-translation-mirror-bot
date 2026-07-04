@@ -92,6 +92,9 @@ On startup the bot creates local SQLite tables when using the default `DATABASE_
 
 ## Quick Setup
 
+Full admin setup: [docs/ADMIN_SETUP.md](docs/ADMIN_SETUP.md)
+Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+
 1. Invite the bot with these permissions:
    - Manage Channels
    - Manage Roles
@@ -103,13 +106,13 @@ On startup the bot creates local SQLite tables when using the default `DATABASE_
 2. Run:
 
 ```text
-/setup_server languages:ru,en,fr,ar,tr,es,uk
+/setup_server languages:ru,en,fr,ar,tr,es,uk,ro
 ```
 
 Or use an existing main channel:
 
 ```text
-/setup_server languages:ru,en,fr,ar,tr,es,uk source_channel:#general
+/setup_server languages:ru,en,fr,ar,tr,es,uk,ro source_channel:#general
 ```
 
 3. Move the bot role above `lang-*` roles if `/setup_check` warns.
@@ -210,12 +213,14 @@ Use these language codes when configuring channels, roles, and user languages:
 | vi | Vietnamese |
 | nl | Dutch |
 | fa | Persian |
+| ro | Romanian |
 
 Warnings:
 
 - Use `en` for English, not `eng`.
 - Use `ar` for Arabic, not `eg`.
 - Use `uk` for Ukrainian, not `ua`.
+- Use `ro` for Romanian.
 
 ## User Flow
 
@@ -250,6 +255,7 @@ Recommended setup flow:
    - `lang-tr`
    - `lang-es`
    - `lang-uk`
+   - `lang-ro`
 2. Move the bot role above all `lang-*` roles in Server Settings -> Roles.
 3. Give the bot role `Manage Roles`.
 4. Hide translation channels from `@everyone`:
