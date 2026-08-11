@@ -105,3 +105,15 @@ Fix:
 
 - Upload PNG, JPEG, WEBP, or GIF.
 - Keep the file at or below 2 MB.
+- Use an image at least 400×100 pixels. The bot crops it to a wide static banner.
+
+## Welcome avatar is missing
+
+- The bot first uses the member's Discord display avatar.
+- If Discord avatar download temporarily fails, the bot uses a generated fallback and still sends the welcome message.
+- Run `/welcome preview` to verify the current banner renderer.
+
+## Change welcome text without starting over
+
+- Run `/welcome edit` to preserve the channels, banner, button destination, and enabled state.
+- Run `/welcome banner` when only the image must change.

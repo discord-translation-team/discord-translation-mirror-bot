@@ -141,9 +141,17 @@ Warnings:
    - an image up to 2 MB;
    - whether the language button is enabled;
    - the language channel when the button is enabled.
-4. Enter the welcome text in the form. Use `{user}` for the new-member mention. Discord channel mentions remain clickable.
+4. Enter the welcome text in the form. Use `{user}` for the new-member mention and `{server_name}` for the current server name. Discord channel mentions remain clickable.
 5. Run `/welcome preview` and `/welcome status`.
 
 The button is optional. If it is enabled without a selected channel, the bot responds with `Выберите языковой канал`.
 
 Use `/welcome disable` to stop messages without deleting the setup and `/welcome enable` to resume them.
+
+The uploaded image is automatically cropped to a wide banner. For every new member, the bot adds a circular avatar on the left, a large display name on the right, and the server name below it.
+
+To update an existing setup:
+
+- `/welcome edit` changes only the welcome text and button label;
+- `/welcome banner` changes only the banner image;
+- `/welcome preview` shows the same personalized rendering used for a real join.

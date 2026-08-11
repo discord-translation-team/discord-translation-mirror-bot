@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from app.database import Database
 from app.services.welcome_service import WelcomeService
+from app.services.welcome_banner_renderer import WelcomeBannerError, WelcomeBannerRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ class WelcomeSetupModal(discord.ui.Modal, title="Настройка welcome-со
             await interaction.response.send_message("Настройка доступна только на сервере.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         async with self.database.session() as session:
             service = WelcomeService(session)
             setting = await service.save_setting(
@@ -73,10 +76,63 @@ class WelcomeSetupModal(discord.ui.Modal, title="Настройка welcome-со
                 button_label=str(self.button_label) if self.button_enabled else None,
                 button_channel_id=self.button_channel.id if self.button_channel else None,
             )
-            payload = service.build_payload(setting, interaction.user)
+            payload = await service.build_payload(setting, interaction.user)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Настройка сохранена и включена. Предпросмотр:\n\n" + payload.content,
+            embed=payload.embed,
+            file=payload.file,
+            view=payload.view,
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=True,
+        )
+
+
+class WelcomeEditModal(discord.ui.Modal, title="Редактирование welcome-сообщения"):
+    message = discord.ui.TextInput(
+        label="Текст приветствия",
+        style=discord.TextStyle.paragraph,
+        max_length=1900,
+        required=True,
+    )
+    button_label = discord.ui.TextInput(
+        label="Название кнопки",
+        max_length=80,
+        required=False,
+    )
+
+    def __init__(self, *, database: Database, current) -> None:
+        super().__init__()
+        self.database = database
+        self.message.default = current.message_template
+        if current.button_enabled:
+            self.button_label.default = current.button_label or "Выбрать язык"
+        else:
+            self.remove_item(self.button_label)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Редактирование доступно только на сервере.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.update_content(
+                interaction.guild.id,
+                message_template=str(self.message),
+                button_label=str(self.button_label) if self.button_label in self.children else None,
+            )
+            if setting is None:
+                await interaction.followup.send(
+                    "Welcome ещё не настроен. Используйте `/welcome setup`.",
+                    ephemeral=True,
+                )
+                return
+            payload = await service.build_payload(setting, interaction.user)
+
+        await interaction.followup.send(
+            "Изменения сохранены. Предпросмотр:\n\n" + payload.content,
             embed=payload.embed,
             file=payload.file,
             view=payload.view,
@@ -144,6 +200,15 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
             await interaction.response.send_message("Размер welcome-картинки не должен превышать 2 МБ.", ephemeral=True)
             return
 
+        try:
+            WelcomeBannerRenderer().validate_banner(image_bytes)
+        except WelcomeBannerError:
+            await interaction.response.send_message(
+                "Баннер повреждён или слишком маленький. Используйте изображение не меньше 400×100 px.",
+                ephemeral=True,
+            )
+            return
+
         async with self.database.session() as session:
             current = await WelcomeService(session).get_setting(interaction.guild.id)
 
@@ -160,6 +225,84 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
         )
         await interaction.response.send_modal(modal)
 
+    @app_commands.command(name="edit", description="Изменить текст welcome без повторной настройки")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def edit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        async with self.database.session() as session:
+            current = await WelcomeService(session).get_setting(interaction.guild.id)
+        if current is None:
+            await interaction.response.send_message(
+                "Welcome ещё не настроен. Используйте `/welcome setup`.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(WelcomeEditModal(database=self.database, current=current))
+
+    @app_commands.command(name="banner", description="Заменить только welcome-баннер")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(image="Новый баннер PNG, JPEG, WEBP или GIF (до 2 МБ)")
+    async def banner(self, interaction: discord.Interaction, image: discord.Attachment) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        async with self.database.session() as session:
+            current = await WelcomeService(session).get_setting(interaction.guild.id)
+        if current is None:
+            await interaction.response.send_message(
+                "Welcome ещё не настроен. Используйте `/welcome setup`.",
+                ephemeral=True,
+            )
+            return
+        image_error = WelcomeService.validate_image(image.content_type, image.size)
+        if image_error:
+            await interaction.response.send_message(image_error, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            image_bytes = await image.read()
+            WelcomeBannerRenderer().validate_banner(image_bytes)
+        except discord.DiscordException:
+            await interaction.followup.send("Не удалось загрузить баннер. Попробуйте ещё раз.", ephemeral=True)
+            return
+        except WelcomeBannerError:
+            await interaction.followup.send(
+                "Баннер повреждён или слишком маленький. Используйте изображение не меньше 400×100 px.",
+                ephemeral=True,
+            )
+            return
+        if len(image_bytes) != image.size or len(image_bytes) > 2 * 1024 * 1024:
+            await interaction.followup.send("Размер welcome-баннера не должен превышать 2 МБ.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.update_banner(
+                interaction.guild.id,
+                image_bytes=image_bytes,
+                image_content_type=image.content_type or "",
+                image_filename=image.filename,
+            )
+            if setting is None:
+                await interaction.followup.send(
+                    "Welcome ещё не настроен. Используйте `/welcome setup`.",
+                    ephemeral=True,
+                )
+                return
+            payload = await service.build_payload(setting, interaction.user)
+
+        await interaction.followup.send(
+            "Баннер обновлён. Предпросмотр:\n\n" + payload.content,
+            embed=payload.embed,
+            file=payload.file,
+            view=payload.view,
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="preview", description="Показать текущее welcome-сообщение")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def preview(self, interaction: discord.Interaction) -> None:
@@ -172,7 +315,7 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
             if setting is None:
                 await interaction.response.send_message("Welcome ещё не настроен. Используйте `/welcome setup`.", ephemeral=True)
                 return
-            payload = service.build_payload(setting, interaction.user)
+            payload = await service.build_payload(setting, interaction.user)
 
         await interaction.response.send_message(
             payload.content,

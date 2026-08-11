@@ -127,17 +127,21 @@ Or use an existing main channel:
 
 ## Welcome Messages
 
-The bot can greet new human members with custom text, an image, and an optional button to the language channel.
+The bot can greet new human members with custom text, a personalized wide banner, and an optional button to the language channel. The banner shows the member's avatar, display name, and the server name.
 
 1. Enable `SERVER MEMBERS INTENT` in the Discord Developer Portal.
 2. Give the bot `View Channel`, `Send Messages`, `Embed Links`, and `Attach Files` in the welcome channel.
 3. Run `/welcome setup`, select the welcome channel, upload an image up to 2 MB, and optionally select the language channel for the button.
-4. Complete the short text form. Use `{user}` where the new member should be mentioned and use Discord channel mentions such as `#rules` in the text.
+4. Complete the short text form. Use `{user}` where the new member should be mentioned, `{server_name}` for the current server name, and Discord channel mentions such as `#rules` in the text.
 5. Check the result with `/welcome preview` and `/welcome status`.
+
+After initial setup, use `/welcome edit` to change only the text and button label, or `/welcome banner` to replace only the banner. You do not need to repeat the full setup.
 
 Management commands:
 
 - `/welcome setup`
+- `/welcome edit`
+- `/welcome banner`
 - `/welcome preview`
 - `/welcome status`
 - `/welcome enable`

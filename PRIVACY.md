@@ -19,3 +19,5 @@ In on-demand mode, selected message text is sent to the configured translation p
 Future real translation providers may receive message text for translation. Before enabling another real provider, server operators should review that provider's privacy policy and update users about where message text may be sent.
 
 When welcome messages are configured, the bot stores the administrator-provided message template and image in the configured database. It processes the new member's Discord ID to create the requested mention. Welcome images and message text are not written to normal operational logs.
+
+To create a personalized welcome banner, the bot temporarily downloads the member's Discord display avatar and combines it in memory with the stored banner, display name, and server name. The generated per-member image is sent to Discord and is not stored in the bot database or an unbounded local cache.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from io import BytesIO
 import logging
@@ -10,10 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mention_safety import sanitize_mentions
 from app.models import WelcomeSetting
+from app.services.welcome_banner_renderer import WelcomeBannerRenderer
 
 logger = logging.getLogger(__name__)
 
 MAX_WELCOME_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_AVATAR_BYTES = 2 * 1024 * 1024
+AVATAR_DOWNLOAD_TIMEOUT_SECONDS = 5
 SUPPORTED_WELCOME_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
@@ -74,6 +78,39 @@ class WelcomeService:
         await self.session.commit()
         return setting
 
+    async def update_content(
+        self,
+        guild_id: int,
+        *,
+        message_template: str,
+        button_label: str | None,
+    ) -> WelcomeSetting | None:
+        setting = await self.get_setting(guild_id)
+        if setting is None:
+            return None
+        setting.message_template = message_template.strip()
+        if setting.button_enabled:
+            setting.button_label = button_label.strip() if button_label else "Выбрать язык"
+        await self.session.commit()
+        return setting
+
+    async def update_banner(
+        self,
+        guild_id: int,
+        *,
+        image_bytes: bytes,
+        image_content_type: str,
+        image_filename: str,
+    ) -> WelcomeSetting | None:
+        setting = await self.get_setting(guild_id)
+        if setting is None:
+            return None
+        setting.image_bytes = image_bytes
+        setting.image_content_type = image_content_type
+        setting.image_filename = image_filename
+        await self.session.commit()
+        return setting
+
     @staticmethod
     def validate_image(content_type: str | None, size: int) -> str | None:
         if content_type not in SUPPORTED_WELCOME_IMAGE_TYPES:
@@ -93,21 +130,41 @@ class WelcomeService:
         }
         return [name for name, granted in required.items() if not granted]
 
-    @staticmethod
-    def build_payload(
+    async def build_payload(
+        self,
         setting: WelcomeSetting,
         member: discord.Member,
         *,
         include_button: bool = True,
     ) -> WelcomePayload:
-        safe_template = sanitize_mentions(setting.message_template)
+        user_marker = "\x00WELCOME_USER\x00"
+        safe_template = sanitize_mentions(setting.message_template).replace("{user}", user_marker)
+        safe_server_name = sanitize_mentions(member.guild.name)
+        content = safe_template.replace("{server_name}", safe_server_name)
         mention = member.mention
-        content = safe_template.replace("{user}", mention)
-        if "{user}" not in safe_template:
+        content = content.replace(user_marker, mention)
+        if user_marker not in safe_template:
             content = f"{mention}\n{content}"
 
-        filename = WelcomeService._safe_filename(setting.image_filename, setting.image_content_type)
-        file = discord.File(BytesIO(setting.image_bytes), filename=filename)
+        avatar_bytes = await self._read_avatar(member)
+        try:
+            rendered_bytes = await asyncio.to_thread(
+                WelcomeBannerRenderer().render,
+                banner_bytes=setting.image_bytes,
+                avatar_bytes=avatar_bytes,
+                display_name=member.display_name,
+                server_name=member.guild.name,
+            )
+            filename = "welcome-banner.png"
+        except Exception as exc:
+            logger.warning(
+                "welcome_banner_render_failed",
+                extra={"guild_id": member.guild.id, "member_id": member.id, "error_type": type(exc).__name__},
+            )
+            rendered_bytes = setting.image_bytes
+            filename = WelcomeService._safe_filename(setting.image_filename, setting.image_content_type)
+
+        file = discord.File(BytesIO(rendered_bytes), filename=filename)
         embed = discord.Embed()
         embed.set_image(url=f"attachment://{filename}")
 
@@ -158,7 +215,7 @@ class WelcomeService:
                 extra={"guild_id": member.guild.id, "channel_id": setting.button_channel_id},
             )
 
-        payload = self.build_payload(setting, member, include_button=include_button)
+        payload = await self.build_payload(setting, member, include_button=include_button)
         try:
             await channel.send(
                 content=payload.content,
@@ -184,6 +241,27 @@ class WelcomeService:
             extra={"guild_id": member.guild.id, "channel_id": channel.id, "member_id": member.id},
         )
         return True
+
+    @staticmethod
+    async def _read_avatar(member: discord.Member) -> bytes | None:
+        try:
+            avatar_bytes = await asyncio.wait_for(
+                member.display_avatar.with_size(256).read(),
+                timeout=AVATAR_DOWNLOAD_TIMEOUT_SECONDS,
+            )
+        except (discord.DiscordException, asyncio.TimeoutError, OSError):
+            logger.warning(
+                "welcome_avatar_download_failed",
+                extra={"guild_id": member.guild.id, "member_id": member.id},
+            )
+            return None
+        if len(avatar_bytes) > MAX_AVATAR_BYTES:
+            logger.warning(
+                "welcome_avatar_too_large",
+                extra={"guild_id": member.guild.id, "member_id": member.id, "size": len(avatar_bytes)},
+            )
+            return None
+        return avatar_bytes
 
     @staticmethod
     def _safe_filename(filename: str, content_type: str) -> str:
