@@ -125,6 +125,26 @@ Or use an existing main channel:
 
 5. Users open `#choose-language`, select a language, then react with `🌐` in any channel the bot can read.
 
+## Welcome Messages
+
+The bot can greet new human members with custom text, an image, and an optional button to the language channel.
+
+1. Enable `SERVER MEMBERS INTENT` in the Discord Developer Portal.
+2. Give the bot `View Channel`, `Send Messages`, `Embed Links`, and `Attach Files` in the welcome channel.
+3. Run `/welcome setup`, select the welcome channel, upload an image up to 2 MB, and optionally select the language channel for the button.
+4. Complete the short text form. Use `{user}` where the new member should be mentioned and use Discord channel mentions such as `#rules` in the text.
+5. Check the result with `/welcome preview` and `/welcome status`.
+
+Management commands:
+
+- `/welcome setup`
+- `/welcome preview`
+- `/welcome status`
+- `/welcome enable`
+- `/welcome disable`
+
+The uploaded image is stored in the configured database, including Railway PostgreSQL. No external image-storage subscription is required.
+
 The `source_channel` option is optional. Users can react with `🌐` in any channel where the bot has View Channel, Read Message History, and access to reaction events. `#global-chat` is only a convenience channel created by `/setup_server` when no existing source channel is provided.
 
 ## Railway PostgreSQL
@@ -142,8 +162,9 @@ On Railway, attach a Railway PostgreSQL service and use the `DATABASE_URL` provi
 In the Discord Developer Portal:
 
 1. Enable the `MESSAGE CONTENT INTENT` for the bot.
-2. Generate an OAuth2 invite URL with scopes `bot` and `applications.commands`.
-3. Give the bot these permissions:
+2. Enable the `SERVER MEMBERS INTENT` when welcome messages are used.
+3. Generate an OAuth2 invite URL with scopes `bot` and `applications.commands`.
+4. Give the bot these permissions:
    - View Channels
    - Read Message History
    - Send Messages
@@ -151,6 +172,7 @@ In the Discord Developer Portal:
    - Manage Roles for automatic language role sync
    - Manage Webhooks only for legacy mirror mode
    - Use Slash Commands
+   - Attach Files for welcome images
 
 ## Slash Commands
 

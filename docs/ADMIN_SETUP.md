@@ -131,3 +131,19 @@ Warnings:
 - `/translation_channel_list`
 - `/language_role_list`
 - `/translate_status`
+
+## Welcome setup
+
+1. Enable `SERVER MEMBERS INTENT` for the bot in Discord Developer Portal.
+2. Give the bot `View Channel`, `Send Messages`, `Embed Links`, and `Attach Files` in the welcome channel.
+3. Run `/welcome setup` and provide:
+   - the welcome channel;
+   - an image up to 2 MB;
+   - whether the language button is enabled;
+   - the language channel when the button is enabled.
+4. Enter the welcome text in the form. Use `{user}` for the new-member mention. Discord channel mentions remain clickable.
+5. Run `/welcome preview` and `/welcome status`.
+
+The button is optional. If it is enabled without a selected channel, the bot responds with `Выберите языковой канал`.
+
+Use `/welcome disable` to stop messages without deleting the setup and `/welcome enable` to resume them.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -101,6 +101,25 @@ class LanguageSetupMessage(TimestampMixin, Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class WelcomeSetting(TimestampMixin, Base):
+    __tablename__ = "welcome_settings"
+    __table_args__ = (
+        UniqueConstraint("guild_id", name="uq_welcome_setting_guild"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    welcome_channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_template: Mapped[str] = mapped_column(Text, nullable=False)
+    image_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    image_content_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    image_filename: Mapped[str] = mapped_column(String(128), nullable=False)
+    button_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    button_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    button_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class OnDemandTranslationMapping(TimestampMixin, Base):

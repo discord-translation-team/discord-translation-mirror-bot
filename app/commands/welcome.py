@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import logging
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from app.database import Database
+from app.services.welcome_service import WelcomeService
+
+logger = logging.getLogger(__name__)
+
+
+class WelcomeSetupModal(discord.ui.Modal, title="Настройка welcome-сообщения"):
+    message = discord.ui.TextInput(
+        label="Текст приветствия",
+        placeholder="Добро пожаловать, {user}! Выберите язык ниже.",
+        style=discord.TextStyle.paragraph,
+        max_length=1900,
+        required=True,
+    )
+    button_label = discord.ui.TextInput(
+        label="Название кнопки",
+        placeholder="Выбрать язык",
+        max_length=80,
+        required=False,
+    )
+
+    def __init__(
+        self,
+        *,
+        database: Database,
+        welcome_channel: discord.TextChannel,
+        image_bytes: bytes,
+        image_content_type: str,
+        image_filename: str,
+        button_enabled: bool,
+        button_channel: discord.TextChannel | None,
+        current_message: str | None = None,
+        current_button_label: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.database = database
+        self.welcome_channel = welcome_channel
+        self.image_bytes = image_bytes
+        self.image_content_type = image_content_type
+        self.image_filename = image_filename
+        self.button_enabled = button_enabled
+        self.button_channel = button_channel
+        if current_message:
+            self.message.default = current_message
+        if button_enabled:
+            self.button_label.default = current_button_label or "Выбрать язык"
+        else:
+            self.remove_item(self.button_label)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Настройка доступна только на сервере.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.save_setting(
+                guild_id=interaction.guild.id,
+                welcome_channel_id=self.welcome_channel.id,
+                message_template=str(self.message),
+                image_bytes=self.image_bytes,
+                image_content_type=self.image_content_type,
+                image_filename=self.image_filename,
+                button_enabled=self.button_enabled,
+                button_label=str(self.button_label) if self.button_enabled else None,
+                button_channel_id=self.button_channel.id if self.button_channel else None,
+            )
+            payload = service.build_payload(setting, interaction.user)
+
+        await interaction.response.send_message(
+            "Настройка сохранена и включена. Предпросмотр:\n\n" + payload.content,
+            embed=payload.embed,
+            file=payload.file,
+            view=payload.view,
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=True,
+        )
+
+
+class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description="Настройка приветствий"):
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    @app_commands.command(name="setup", description="Настроить welcome-сообщение")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        welcome_channel="Канал для приветствий",
+        image="Небольшая картинка PNG, JPEG, WEBP или GIF (до 2 МБ)",
+        button_enabled="Добавить кнопку перехода в языковой канал",
+        language_channel="Канал, который откроет кнопка",
+    )
+    async def setup(
+        self,
+        interaction: discord.Interaction,
+        welcome_channel: discord.TextChannel,
+        image: discord.Attachment,
+        button_enabled: bool = True,
+        language_channel: discord.TextChannel | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Настройка доступна только на сервере.", ephemeral=True)
+            return
+        if button_enabled and language_channel is None:
+            await interaction.response.send_message("Выберите языковой канал", ephemeral=True)
+            return
+        if welcome_channel.guild.id != interaction.guild.id or (
+            language_channel is not None and language_channel.guild.id != interaction.guild.id
+        ):
+            await interaction.response.send_message("Выберите канал этого сервера.", ephemeral=True)
+            return
+
+        image_error = WelcomeService.validate_image(image.content_type, image.size)
+        if image_error:
+            await interaction.response.send_message(image_error, ephemeral=True)
+            return
+
+        bot_member = interaction.guild.me
+        if bot_member is None:
+            await interaction.response.send_message("Не удалось проверить права бота.", ephemeral=True)
+            return
+        missing_permissions = WelcomeService.validate_channel_permissions(welcome_channel, bot_member)
+        if missing_permissions:
+            await interaction.response.send_message(
+                "В welcome-канале не хватает прав: " + ", ".join(missing_permissions),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            image_bytes = await image.read()
+        except discord.DiscordException:
+            await interaction.response.send_message("Не удалось загрузить картинку. Попробуйте ещё раз.", ephemeral=True)
+            return
+
+        if len(image_bytes) != image.size or len(image_bytes) > 2 * 1024 * 1024:
+            await interaction.response.send_message("Размер welcome-картинки не должен превышать 2 МБ.", ephemeral=True)
+            return
+
+        async with self.database.session() as session:
+            current = await WelcomeService(session).get_setting(interaction.guild.id)
+
+        modal = WelcomeSetupModal(
+            database=self.database,
+            welcome_channel=welcome_channel,
+            image_bytes=image_bytes,
+            image_content_type=image.content_type or "",
+            image_filename=image.filename,
+            button_enabled=button_enabled,
+            button_channel=language_channel,
+            current_message=current.message_template if current else None,
+            current_button_label=current.button_label if current else None,
+        )
+        await interaction.response.send_modal(modal)
+
+    @app_commands.command(name="preview", description="Показать текущее welcome-сообщение")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def preview(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.get_setting(interaction.guild.id)
+            if setting is None:
+                await interaction.response.send_message("Welcome ещё не настроен. Используйте `/welcome setup`.", ephemeral=True)
+                return
+            payload = service.build_payload(setting, interaction.user)
+
+        await interaction.response.send_message(
+            payload.content,
+            embed=payload.embed,
+            file=payload.file,
+            view=payload.view,
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="status", description="Проверить welcome-настройку и права")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def status(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        async with self.database.session() as session:
+            setting = await WelcomeService(session).get_setting(interaction.guild.id)
+        if setting is None:
+            await interaction.response.send_message("Welcome не настроен. Используйте `/welcome setup`.", ephemeral=True)
+            return
+
+        issues: list[str] = []
+        channel = interaction.guild.get_channel(setting.welcome_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            issues.append("welcome-канал удалён или недоступен")
+        elif interaction.guild.me is not None:
+            missing = WelcomeService.validate_channel_permissions(channel, interaction.guild.me)
+            if missing:
+                issues.append("не хватает прав: " + ", ".join(missing))
+        if setting.button_enabled and not isinstance(
+            interaction.guild.get_channel(setting.button_channel_id or 0), discord.TextChannel
+        ):
+            issues.append("языковой канал кнопки удалён или недоступен")
+
+        state = "включён" if setting.is_enabled else "отключён"
+        lines = [f"Welcome **{state}**.", f"Канал: <#{setting.welcome_channel_id}>."]
+        if setting.button_enabled:
+            lines.append(f"Кнопка: **{setting.button_label or 'Выбрать язык'}** → <#{setting.button_channel_id}>.")
+        else:
+            lines.append("Кнопка отключена.")
+        lines.append("Проблем не найдено." if not issues else "Проблемы:\n- " + "\n- ".join(issues))
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @app_commands.command(name="enable", description="Включить welcome-сообщения")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def enable(self, interaction: discord.Interaction) -> None:
+        await self._set_enabled(interaction, True)
+
+    @app_commands.command(name="disable", description="Отключить welcome-сообщения без удаления настройки")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def disable(self, interaction: discord.Interaction) -> None:
+        await self._set_enabled(interaction, False)
+
+    async def _set_enabled(self, interaction: discord.Interaction, enabled: bool) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        async with self.database.session() as session:
+            setting = await WelcomeService(session).set_enabled(interaction.guild.id, enabled)
+        if setting is None:
+            await interaction.response.send_message("Welcome ещё не настроен. Используйте `/welcome setup`.", ephemeral=True)
+            return
+        action = "включён" if enabled else "отключён"
+        await interaction.response.send_message(f"Welcome {action}.", ephemeral=True)

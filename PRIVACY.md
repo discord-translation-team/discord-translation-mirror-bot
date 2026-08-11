@@ -17,3 +17,5 @@ When the OpenAI provider is enabled, text from configured source channels is sen
 In on-demand mode, selected message text is sent to the configured translation provider only when a user reacts with the configured emoji or uses the Translate command. Translations are posted to configured language channels, not DM by default.
 
 Future real translation providers may receive message text for translation. Before enabling another real provider, server operators should review that provider's privacy policy and update users about where message text may be sent.
+
+When welcome messages are configured, the bot stores the administrator-provided message template and image in the configured database. It processes the new member's Discord ID to create the requested mention. Welcome images and message text are not written to normal operational logs.

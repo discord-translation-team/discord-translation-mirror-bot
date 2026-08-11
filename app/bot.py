@@ -9,11 +9,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.commands.admin import AdminCommands, register_translate_context_menu
+from app.commands.welcome import WelcomeCommands
 from app.config import Settings, configure_logging, load_settings
 from app.database import Database
 from app.services.on_demand_translation_service import OnDemandTranslationService
 from app.services.relay_service import RelayService
 from app.services.webhook_service import WebhookService
+from app.services.welcome_service import WelcomeService
 from app.translation.base import TranslationProvider
 from app.translation.gemini_provider import GeminiTranslationProvider
 from app.translation.mock_provider import MockTranslationProvider
@@ -46,6 +48,7 @@ class TranslationMirrorBot(commands.Bot):
         intents.guilds = True
         intents.messages = True
         intents.message_content = True
+        intents.members = True
         if hasattr(intents, "webhooks"):
             intents.webhooks = True
         super().__init__(command_prefix="!", intents=intents)
@@ -74,6 +77,7 @@ class TranslationMirrorBot(commands.Bot):
                 default_monthly_char_limit=self.settings.default_monthly_char_limit,
             )
         )
+        await self.add_cog(WelcomeCommands(self.database))
         if self.settings.context_menu_translation_enabled:
             register_translate_context_menu(self.tree)
         synced = await self.tree.sync()
@@ -118,6 +122,12 @@ class TranslationMirrorBot(commands.Bot):
                 "railway_service_name": os.getenv("RAILWAY_SERVICE_NAME"),
             },
         )
+
+    async def on_member_join(self, member: discord.Member) -> None:
+        if member.bot:
+            return
+        async with self.database.session() as session:
+            await WelcomeService(session).send_welcome(member)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None or message.author.bot or message.webhook_id is not None:

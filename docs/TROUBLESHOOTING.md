@@ -90,3 +90,18 @@ Fix:
 - New versions track the setup message.
 - Run `/language_setup_message channel:#choose-language` to refresh it.
 - Delete old manual duplicate messages if needed.
+
+## Welcome message is not sent
+
+Fix:
+
+- Enable `SERVER MEMBERS INTENT` in Discord Developer Portal.
+- Run `/welcome status`.
+- Check that welcome is enabled.
+- Give the bot View Channel, Send Messages, Embed Links, and Attach Files in the welcome channel.
+- If a configured channel was deleted, run `/welcome setup` again.
+
+## Welcome setup rejects the image
+
+- Upload PNG, JPEG, WEBP, or GIF.
+- Keep the file at or below 2 MB.
