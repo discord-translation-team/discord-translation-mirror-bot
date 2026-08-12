@@ -138,7 +138,7 @@ Warnings:
 2. Give the bot `View Channel`, `Send Messages`, `Embed Links`, and `Attach Files` in the welcome channel.
 3. Run `/welcome setup` and provide:
    - the welcome channel;
-   - an image up to 2 MB;
+   - an image up to 5 MB;
    - whether the language button is enabled;
    - the language channel when the button is enabled.
 4. Enter the welcome text in the form. Use `{user}` for the new-member mention and `{server_name}` for the current server name. Discord channel mentions remain clickable.
@@ -148,7 +148,7 @@ The button is optional. If it is enabled without a selected channel, the bot res
 
 Use `/welcome disable` to stop messages without deleting the setup and `/welcome enable` to resume them.
 
-The uploaded image is automatically cropped to a wide banner. For every new member, the bot adds a circular avatar on the left, a large display name on the right, and the server name below it.
+The uploaded image is automatically cropped to a compact wide banner with rounded corners and full-image shading. For every new member, the bot adds a circular avatar on the left, a large bold display name on the right, and the server name below it.
 
 To update an existing setup:
 

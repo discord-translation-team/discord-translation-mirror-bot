@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.database import Database
-from app.services.welcome_service import WelcomeService
+from app.services.welcome_service import MAX_WELCOME_IMAGE_BYTES, WelcomeService
 from app.services.welcome_banner_renderer import WelcomeBannerError, WelcomeBannerRenderer
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,7 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         welcome_channel="Канал для приветствий",
-        image="Небольшая картинка PNG, JPEG, WEBP или GIF (до 2 МБ)",
+        image="Картинка PNG, JPEG, WEBP или GIF (до 5 МБ)",
         button_enabled="Добавить кнопку перехода в языковой канал",
         language_channel="Канал, который откроет кнопка",
     )
@@ -196,8 +196,8 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
             await interaction.response.send_message("Не удалось загрузить картинку. Попробуйте ещё раз.", ephemeral=True)
             return
 
-        if len(image_bytes) != image.size or len(image_bytes) > 2 * 1024 * 1024:
-            await interaction.response.send_message("Размер welcome-картинки не должен превышать 2 МБ.", ephemeral=True)
+        if len(image_bytes) != image.size or len(image_bytes) > MAX_WELCOME_IMAGE_BYTES:
+            await interaction.response.send_message("Размер welcome-картинки не должен превышать 5 МБ.", ephemeral=True)
             return
 
         try:
@@ -243,7 +243,7 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
 
     @app_commands.command(name="banner", description="Заменить только welcome-баннер")
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(image="Новый баннер PNG, JPEG, WEBP или GIF (до 2 МБ)")
+    @app_commands.describe(image="Новый баннер PNG, JPEG, WEBP или GIF (до 5 МБ)")
     async def banner(self, interaction: discord.Interaction, image: discord.Attachment) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
@@ -274,8 +274,8 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
                 ephemeral=True,
             )
             return
-        if len(image_bytes) != image.size or len(image_bytes) > 2 * 1024 * 1024:
-            await interaction.followup.send("Размер welcome-баннера не должен превышать 2 МБ.", ephemeral=True)
+        if len(image_bytes) != image.size or len(image_bytes) > MAX_WELCOME_IMAGE_BYTES:
+            await interaction.followup.send("Размер welcome-баннера не должен превышать 5 МБ.", ephemeral=True)
             return
 
         async with self.database.session() as session:

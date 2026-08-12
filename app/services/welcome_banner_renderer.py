@@ -5,16 +5,19 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 
-BANNER_SIZE = (1200, 300)
+BANNER_SIZE = (1200, 420)
 MAX_SOURCE_DIMENSION = 8_000
-AVATAR_SIZE = 190
-AVATAR_POSITION = (55, 55)
-TEXT_LEFT = 300
+CORNER_RADIUS = 48
+BACKGROUND_SHADE_ALPHA = 110
+AVATAR_SIZE = 230
+AVATAR_POSITION = (60, 95)
+TEXT_LEFT = 350
 TEXT_RIGHT = 1140
-NAME_MAX_SIZE = 54
-NAME_MIN_SIZE = 30
-SERVER_MAX_SIZE = 32
-SERVER_MIN_SIZE = 20
+NAME_MAX_SIZE = 72
+NAME_MIN_SIZE = 38
+SERVER_MAX_SIZE = 42
+SERVER_MIN_SIZE = 24
+TEXT_SPACING = 30
 
 
 class WelcomeBannerError(ValueError):
@@ -41,9 +44,7 @@ class WelcomeBannerRenderer:
             centering=(0.5, 0.5),
         ).convert("RGBA")
 
-        shade = Image.new("RGBA", BANNER_SIZE, (0, 0, 0, 0))
-        shade_draw = ImageDraw.Draw(shade)
-        shade_draw.rounded_rectangle((25, 30, 1175, 270), radius=34, fill=(0, 0, 0, 105))
+        shade = Image.new("RGBA", BANNER_SIZE, (0, 0, 0, BACKGROUND_SHADE_ALPHA))
         canvas = Image.alpha_composite(canvas, shade)
 
         avatar = self._avatar_image(avatar_bytes, display_name)
@@ -82,10 +83,9 @@ class WelcomeBannerRenderer:
         server_box = draw.textbbox((0, 0), server_text, font=server_font)
         name_height = name_box[3] - name_box[1]
         server_height = server_box[3] - server_box[1]
-        spacing = 14
-        block_height = name_height + spacing + server_height
+        block_height = name_height + TEXT_SPACING + server_height
         name_y = (BANNER_SIZE[1] - block_height) // 2 - name_box[1]
-        server_y = name_y + name_height + spacing - server_box[1]
+        server_y = name_y + name_height + TEXT_SPACING - server_box[1]
 
         draw.text(
             (TEXT_LEFT, name_y),
@@ -104,8 +104,16 @@ class WelcomeBannerRenderer:
             stroke_fill=(0, 0, 0, 170),
         )
 
+        corner_mask = Image.new("L", BANNER_SIZE, 0)
+        ImageDraw.Draw(corner_mask).rounded_rectangle(
+            (0, 0, BANNER_SIZE[0] - 1, BANNER_SIZE[1] - 1),
+            radius=CORNER_RADIUS,
+            fill=255,
+        )
+        canvas.putalpha(corner_mask)
+
         output = BytesIO()
-        canvas.convert("RGB").save(output, format="PNG", optimize=True)
+        canvas.save(output, format="PNG", optimize=True)
         return output.getvalue()
 
     def validate_banner(self, banner_bytes: bytes) -> None:

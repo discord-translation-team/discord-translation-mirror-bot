@@ -104,8 +104,8 @@ Fix:
 ## Welcome setup rejects the image
 
 - Upload PNG, JPEG, WEBP, or GIF.
-- Keep the file at or below 2 MB.
-- Use an image at least 400×100 pixels. The bot crops it to a wide static banner.
+- Keep the file at or below 5 MB.
+- Use an image at least 400×100 pixels. The bot crops it to a compact wide static banner with rounded corners.
 
 ## Welcome avatar is missing
 

@@ -8,7 +8,13 @@ import unittest
 from PIL import Image
 
 from app.database import Database
-from app.services.welcome_banner_renderer import BANNER_SIZE, WelcomeBannerError, WelcomeBannerRenderer
+from app.services.welcome_banner_renderer import (
+    BACKGROUND_SHADE_ALPHA,
+    BANNER_SIZE,
+    CORNER_RADIUS,
+    WelcomeBannerError,
+    WelcomeBannerRenderer,
+)
 from app.services.welcome_service import MAX_WELCOME_IMAGE_BYTES, WelcomeService
 
 
@@ -197,6 +203,25 @@ class WelcomeBannerRendererTest(unittest.TestCase):
         rendered = Image.open(BytesIO(result))
         self.assertEqual(rendered.size, BANNER_SIZE)
         self.assertEqual(rendered.format, "PNG")
+        self.assertEqual(rendered.mode, "RGBA")
+        self.assertEqual(rendered.getpixel((0, 0))[3], 0)
+        self.assertEqual(rendered.getpixel((BANNER_SIZE[0] // 2, 0))[3], 255)
+
+    def test_darkens_the_entire_visible_background(self) -> None:
+        result = self.renderer.render(
+            banner_bytes=self._image_bytes(BANNER_SIZE, "white"),
+            avatar_bytes=None,
+            display_name="Member",
+            server_name="Server",
+        )
+
+        rendered = Image.open(BytesIO(result)).convert("RGBA")
+        expected_channel = round(255 * (255 - BACKGROUND_SHADE_ALPHA) / 255)
+        background_pixel = rendered.getpixel((BANNER_SIZE[0] - CORNER_RADIUS - 20, CORNER_RADIUS + 20))
+        self.assertEqual(background_pixel[3], 255)
+        self.assertAlmostEqual(background_pixel[0], expected_channel, delta=1)
+        self.assertAlmostEqual(background_pixel[1], expected_channel, delta=1)
+        self.assertAlmostEqual(background_pixel[2], expected_channel, delta=1)
 
     def test_handles_long_names_and_missing_avatar(self) -> None:
         result = self.renderer.render(

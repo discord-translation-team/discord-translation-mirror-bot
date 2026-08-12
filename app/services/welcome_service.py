@@ -15,7 +15,7 @@ from app.services.welcome_banner_renderer import WelcomeBannerRenderer
 
 logger = logging.getLogger(__name__)
 
-MAX_WELCOME_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_WELCOME_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 AVATAR_DOWNLOAD_TIMEOUT_SECONDS = 5
 SUPPORTED_WELCOME_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -116,7 +116,7 @@ class WelcomeService:
         if content_type not in SUPPORTED_WELCOME_IMAGE_TYPES:
             return "Загрузите изображение PNG, JPEG, WEBP или GIF."
         if size <= 0 or size > MAX_WELCOME_IMAGE_BYTES:
-            return "Размер welcome-картинки не должен превышать 2 МБ."
+            return "Размер welcome-картинки не должен превышать 5 МБ."
         return None
 
     @staticmethod
