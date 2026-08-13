@@ -18,6 +18,8 @@ NAME_MIN_SIZE = 38
 SERVER_MAX_SIZE = 42
 SERVER_MIN_SIZE = 24
 TEXT_SPACING = 30
+BORDER_WIDTH = 8
+TEXT_BOLDEN_OFFSETS = ((0, 0), (1, 0), (0, 1), (1, 1))
 
 
 class WelcomeBannerError(ValueError):
@@ -32,6 +34,7 @@ class WelcomeBannerRenderer:
         avatar_bytes: bytes | None,
         display_name: str,
         server_name: str,
+        accent_color: tuple[int, int, int] = (88, 101, 242),
     ) -> bytes:
         banner = self._open_image(banner_bytes, "banner")
         if banner.width > MAX_SOURCE_DIMENSION or banner.height > MAX_SOURCE_DIMENSION:
@@ -52,14 +55,6 @@ class WelcomeBannerRenderer:
         ImageDraw.Draw(avatar_mask).ellipse((0, 0, AVATAR_SIZE, AVATAR_SIZE), fill=255)
         canvas.paste(avatar, AVATAR_POSITION, avatar_mask)
 
-        border_draw = ImageDraw.Draw(canvas)
-        x, y = AVATAR_POSITION
-        border_draw.ellipse(
-            (x - 4, y - 4, x + AVATAR_SIZE + 4, y + AVATAR_SIZE + 4),
-            outline=(255, 255, 255, 220),
-            width=4,
-        )
-
         draw = ImageDraw.Draw(canvas)
         max_width = TEXT_RIGHT - TEXT_LEFT
         name_text, name_font = self._fit_text(
@@ -76,10 +71,10 @@ class WelcomeBannerRenderer:
             max_width,
             SERVER_MAX_SIZE,
             SERVER_MIN_SIZE,
-            bold=False,
+            bold=True,
         )
 
-        name_box = draw.textbbox((0, 0), name_text, font=name_font, stroke_width=1)
+        name_box = draw.textbbox((0, 0), name_text, font=name_font)
         server_box = draw.textbbox((0, 0), server_text, font=server_font)
         name_height = name_box[3] - name_box[1]
         server_height = server_box[3] - server_box[1]
@@ -87,22 +82,8 @@ class WelcomeBannerRenderer:
         name_y = (BANNER_SIZE[1] - block_height) // 2 - name_box[1]
         server_y = name_y + name_height + TEXT_SPACING - server_box[1]
 
-        draw.text(
-            (TEXT_LEFT, name_y),
-            name_text,
-            font=name_font,
-            fill=(255, 255, 255, 255),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0, 190),
-        )
-        draw.text(
-            (TEXT_LEFT, server_y),
-            server_text,
-            font=server_font,
-            fill=(225, 230, 238, 255),
-            stroke_width=1,
-            stroke_fill=(0, 0, 0, 170),
-        )
+        self._draw_heavy_text(draw, (TEXT_LEFT, name_y), name_text, name_font, (255, 255, 255, 255))
+        self._draw_heavy_text(draw, (TEXT_LEFT, server_y), server_text, server_font, (225, 230, 238, 255))
 
         corner_mask = Image.new("L", BANNER_SIZE, 0)
         ImageDraw.Draw(corner_mask).rounded_rectangle(
@@ -111,10 +92,28 @@ class WelcomeBannerRenderer:
             fill=255,
         )
         canvas.putalpha(corner_mask)
+        ImageDraw.Draw(canvas).rounded_rectangle(
+            (BORDER_WIDTH // 2, BORDER_WIDTH // 2, BANNER_SIZE[0] - 1 - BORDER_WIDTH // 2, BANNER_SIZE[1] - 1 - BORDER_WIDTH // 2),
+            radius=CORNER_RADIUS - BORDER_WIDTH // 2,
+            outline=(*accent_color, 255),
+            width=BORDER_WIDTH,
+        )
 
         output = BytesIO()
         canvas.save(output, format="PNG", optimize=True)
         return output.getvalue()
+
+    @staticmethod
+    def _draw_heavy_text(
+        draw: ImageDraw.ImageDraw,
+        position: tuple[int, int],
+        text: str,
+        font: ImageFont.ImageFont,
+        fill: tuple[int, int, int, int],
+    ) -> None:
+        x, y = position
+        for offset_x, offset_y in TEXT_BOLDEN_OFFSETS:
+            draw.text((x + offset_x, y + offset_y), text, font=font, fill=fill)
 
     def validate_banner(self, banner_bytes: bytes) -> None:
         image = self._open_image(banner_bytes, "banner")

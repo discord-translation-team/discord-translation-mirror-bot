@@ -19,11 +19,11 @@ MAX_WELCOME_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 AVATAR_DOWNLOAD_TIMEOUT_SECONDS = 5
 SUPPORTED_WELCOME_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+DEFAULT_WELCOME_ACCENT_COLOR = "5865F2"
 
 
 @dataclass(frozen=True)
 class WelcomePayload:
-    content: str
     embed: discord.Embed
     file: discord.File
     view: discord.ui.View | None
@@ -111,6 +111,24 @@ class WelcomeService:
         await self.session.commit()
         return setting
 
+    async def update_accent_color(self, guild_id: int, accent_color: str) -> WelcomeSetting | None:
+        normalized = self.normalize_accent_color(accent_color)
+        if normalized is None:
+            raise ValueError("Invalid accent color")
+        setting = await self.get_setting(guild_id)
+        if setting is None:
+            return None
+        setting.accent_color = normalized
+        await self.session.commit()
+        return setting
+
+    @staticmethod
+    def normalize_accent_color(value: str) -> str | None:
+        normalized = value.strip().removeprefix("#").upper()
+        if len(normalized) != 6 or any(character not in "0123456789ABCDEF" for character in normalized):
+            return None
+        return normalized
+
     @staticmethod
     def validate_image(content_type: str | None, size: int) -> str | None:
         if content_type not in SUPPORTED_WELCOME_IMAGE_TYPES:
@@ -147,6 +165,8 @@ class WelcomeService:
             content = f"{mention}\n{content}"
 
         avatar_bytes = await self._read_avatar(member)
+        accent_hex = self.normalize_accent_color(setting.accent_color) or DEFAULT_WELCOME_ACCENT_COLOR
+        accent_rgb = tuple(bytes.fromhex(accent_hex))
         try:
             rendered_bytes = await asyncio.to_thread(
                 WelcomeBannerRenderer().render,
@@ -154,6 +174,7 @@ class WelcomeService:
                 avatar_bytes=avatar_bytes,
                 display_name=member.display_name,
                 server_name=member.guild.name,
+                accent_color=accent_rgb,
             )
             filename = "welcome-banner.png"
         except Exception as exc:
@@ -165,7 +186,7 @@ class WelcomeService:
             filename = WelcomeService._safe_filename(setting.image_filename, setting.image_content_type)
 
         file = discord.File(BytesIO(rendered_bytes), filename=filename)
-        embed = discord.Embed()
+        embed = discord.Embed(description=content, color=int(accent_hex, 16))
         embed.set_image(url=f"attachment://{filename}")
 
         view = None
@@ -180,7 +201,6 @@ class WelcomeService:
             )
 
         return WelcomePayload(
-            content=content,
             embed=embed,
             file=file,
             view=view,
@@ -218,7 +238,6 @@ class WelcomeService:
         payload = await self.build_payload(setting, member, include_button=include_button)
         try:
             await channel.send(
-                content=payload.content,
                 embed=payload.embed,
                 file=payload.file,
                 view=payload.view,

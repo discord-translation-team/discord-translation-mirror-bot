@@ -150,8 +150,13 @@ Use `/welcome disable` to stop messages without deleting the setup and `/welcome
 
 The uploaded image is automatically cropped to a compact wide banner with rounded corners and full-image shading. For every new member, the bot adds a circular avatar on the left, a large bold display name on the right, and the server name below it.
 
+The welcome text and banner are displayed in one Discord embed. The button belongs to the same message and appears directly below the embed because Discord does not allow buttons inside an embed.
+
 To update an existing setup:
 
 - `/welcome edit` changes only the welcome text and button label;
 - `/welcome banner` changes only the banner image;
+- `/welcome color color:#A020F0` changes the shared banner-border and embed-accent color; use HEX format `#RRGGBB`;
 - `/welcome preview` shows the same personalized rendering used for a real join.
+
+The default color is Discord purple `#5865F2`.

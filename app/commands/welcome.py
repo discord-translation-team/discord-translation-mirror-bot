@@ -79,7 +79,6 @@ class WelcomeSetupModal(discord.ui.Modal, title="Настройка welcome-со
             payload = await service.build_payload(setting, interaction.user)
 
         await interaction.followup.send(
-            "Настройка сохранена и включена. Предпросмотр:\n\n" + payload.content,
             embed=payload.embed,
             file=payload.file,
             view=payload.view,
@@ -132,7 +131,6 @@ class WelcomeEditModal(discord.ui.Modal, title="Редактирование wel
             payload = await service.build_payload(setting, interaction.user)
 
         await interaction.followup.send(
-            "Изменения сохранены. Предпросмотр:\n\n" + payload.content,
             embed=payload.embed,
             file=payload.file,
             view=payload.view,
@@ -295,7 +293,6 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
             payload = await service.build_payload(setting, interaction.user)
 
         await interaction.followup.send(
-            "Баннер обновлён. Предпросмотр:\n\n" + payload.content,
             embed=payload.embed,
             file=payload.file,
             view=payload.view,
@@ -318,7 +315,41 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
             payload = await service.build_payload(setting, interaction.user)
 
         await interaction.response.send_message(
-            payload.content,
+            embed=payload.embed,
+            file=payload.file,
+            view=payload.view,
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="color", description="Изменить цвет welcome-карточки")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(color="HEX-цвет, например #5865F2")
+    async def color(self, interaction: discord.Interaction, color: str) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        normalized = WelcomeService.normalize_accent_color(color)
+        if normalized is None:
+            await interaction.response.send_message(
+                "Укажите цвет в формате HEX `#RRGGBB`, например `#5865F2`.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.update_accent_color(interaction.guild.id, normalized)
+            if setting is None:
+                await interaction.followup.send(
+                    "Welcome ещё не настроен. Используйте `/welcome setup`.",
+                    ephemeral=True,
+                )
+                return
+            payload = await service.build_payload(setting, interaction.user)
+
+        await interaction.followup.send(
             embed=payload.embed,
             file=payload.file,
             view=payload.view,
@@ -353,6 +384,7 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
 
         state = "включён" if setting.is_enabled else "отключён"
         lines = [f"Welcome **{state}**.", f"Канал: <#{setting.welcome_channel_id}>."]
+        lines.append(f"Цвет: `#{setting.accent_color}`.")
         if setting.button_enabled:
             lines.append(f"Кнопка: **{setting.button_label or 'Выбрать язык'}** → <#{setting.button_channel_id}>.")
         else:

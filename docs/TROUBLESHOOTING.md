@@ -117,3 +117,9 @@ Fix:
 
 - Run `/welcome edit` to preserve the channels, banner, button destination, and enabled state.
 - Run `/welcome banner` when only the image must change.
+
+## Welcome color is rejected
+
+- Use six-digit HEX format, for example `/welcome color color:#A020F0`.
+- The same color is used for the banner border and the Discord embed accent.
+- Existing settings are preserved when an invalid color is rejected.

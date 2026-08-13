@@ -135,13 +135,14 @@ The bot can greet new human members with custom text, a personalized wide banner
 4. Complete the short text form. Use `{user}` where the new member should be mentioned, `{server_name}` for the current server name, and Discord channel mentions such as `#rules` in the text.
 5. Check the result with `/welcome preview` and `/welcome status`.
 
-After initial setup, use `/welcome edit` to change only the text and button label, or `/welcome banner` to replace only the banner. You do not need to repeat the full setup.
+After initial setup, use `/welcome edit` to change only the text and button label, `/welcome banner` to replace only the banner, or `/welcome color color:#A020F0` to apply one HEX color to the banner border and embed accent. You do not need to repeat the full setup.
 
 Management commands:
 
 - `/welcome setup`
 - `/welcome edit`
 - `/welcome banner`
+- `/welcome color`
 - `/welcome preview`
 - `/welcome status`
 - `/welcome enable`

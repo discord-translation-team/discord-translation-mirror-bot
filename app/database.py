@@ -40,6 +40,9 @@ class Database:
                 ("input_tokens_used", "ALTER TABLE guild_usage_monthly ADD COLUMN input_tokens_used INTEGER NOT NULL DEFAULT 0"),
                 ("output_tokens_used", "ALTER TABLE guild_usage_monthly ADD COLUMN output_tokens_used INTEGER NOT NULL DEFAULT 0"),
             ],
+            "welcome_settings": [
+                ("accent_color", "ALTER TABLE welcome_settings ADD COLUMN accent_color VARCHAR(6) NOT NULL DEFAULT '5865F2'"),
+            ],
         }
 
         for table_name, table_migrations in migrations.items():

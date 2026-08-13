@@ -120,6 +120,7 @@ class WelcomeSetting(TimestampMixin, Base):
     button_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     button_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
     button_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    accent_color: Mapped[str] = mapped_column(String(6), default="5865F2", nullable=False)
 
 
 class OnDemandTranslationMapping(TimestampMixin, Base):

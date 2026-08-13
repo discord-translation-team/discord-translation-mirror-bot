@@ -6,16 +6,18 @@ import tempfile
 import unittest
 
 from PIL import Image
+from sqlalchemy import inspect, text
 
 from app.database import Database
 from app.services.welcome_banner_renderer import (
     BACKGROUND_SHADE_ALPHA,
     BANNER_SIZE,
+    BORDER_WIDTH,
     CORNER_RADIUS,
     WelcomeBannerError,
     WelcomeBannerRenderer,
 )
-from app.services.welcome_service import MAX_WELCOME_IMAGE_BYTES, WelcomeService
+from app.services.welcome_service import DEFAULT_WELCOME_ACCENT_COLOR, MAX_WELCOME_IMAGE_BYTES, WelcomeService
 
 
 class FakeGuild:
@@ -101,10 +103,11 @@ class WelcomeServiceTest(unittest.IsolatedAsyncioTestCase):
             )
             payload = await service.build_payload(setting, FakeMember())
 
-        self.assertIn("<@456>", payload.content)
-        self.assertIn("<#30>", payload.content)
-        self.assertIn("@\u200beveryone", payload.content)
-        self.assertIn("<@\u200b999>", payload.content)
+        self.assertIn("<@456>", payload.embed.description)
+        self.assertIn("<#30>", payload.embed.description)
+        self.assertIn("@\u200beveryone", payload.embed.description)
+        self.assertIn("<@\u200b999>", payload.embed.description)
+        self.assertEqual(payload.embed.color.value, int(DEFAULT_WELCOME_ACCENT_COLOR, 16))
         self.assertEqual(len(payload.view.children), 1)
         self.assertEqual(payload.view.children[0].url, "https://discord.com/channels/123/20")
         self.assertEqual(payload.embed.image.url, "attachment://welcome-banner.png")
@@ -132,7 +135,7 @@ class WelcomeServiceTest(unittest.IsolatedAsyncioTestCase):
             )
             payload = await service.build_payload(setting, FakeMember())
 
-        self.assertEqual(payload.content, "<@456>\nWelcome!")
+        self.assertEqual(payload.embed.description, "<@456>\nWelcome!")
         self.assertIsNone(payload.view)
 
     async def test_server_name_template_and_partial_updates(self) -> None:
@@ -168,11 +171,69 @@ class WelcomeServiceTest(unittest.IsolatedAsyncioTestCase):
             )
             payload = await service.build_payload(setting, FakeMember())
 
-        self.assertEqual(payload.content, "Hello from Test Community, <@456>!")
+        self.assertEqual(payload.embed.description, "Hello from Test Community, <@456>!")
         self.assertEqual(setting.message_template, "Hello from {server_name}, {user}!")
         self.assertEqual(setting.button_label, "New label")
         self.assertEqual(setting.welcome_channel_id, 10)
         self.assertTrue(setting.is_enabled)
+
+    async def test_updates_accent_color_without_changing_other_fields(self) -> None:
+        banner = self._image_bytes((1200, 420), "green")
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.save_setting(
+                guild_id=123,
+                welcome_channel_id=10,
+                message_template="Welcome, {user}!",
+                image_bytes=banner,
+                image_content_type="image/png",
+                image_filename="welcome.png",
+                button_enabled=True,
+                button_label="Choose language",
+                button_channel_id=20,
+            )
+            setting = await service.update_accent_color(123, "#A020F0")
+            payload = await service.build_payload(setting, FakeMember())
+
+        self.assertEqual(setting.accent_color, "A020F0")
+        self.assertEqual(setting.welcome_channel_id, 10)
+        self.assertEqual(setting.image_bytes, banner)
+        self.assertEqual(setting.message_template, "Welcome, {user}!")
+        self.assertEqual(payload.embed.color.value, 0xA020F0)
+
+    def test_accent_color_validation(self) -> None:
+        self.assertEqual(WelcomeService.normalize_accent_color(" #a020f0 "), "A020F0")
+        self.assertIsNone(WelcomeService.normalize_accent_color("purple"))
+        self.assertIsNone(WelcomeService.normalize_accent_color("#12345"))
+
+    async def test_migrates_existing_welcome_table_with_default_accent(self) -> None:
+        legacy_path = Path(self.temp_dir.name) / "legacy.db"
+        legacy_database = Database(f"sqlite+aiosqlite:///{legacy_path.as_posix()}")
+        async with legacy_database.engine.begin() as conn:
+            await conn.execute(text("""
+                CREATE TABLE welcome_settings (
+                    id INTEGER PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    is_enabled BOOLEAN NOT NULL,
+                    welcome_channel_id BIGINT NOT NULL,
+                    message_template TEXT NOT NULL,
+                    image_bytes BLOB NOT NULL,
+                    image_content_type VARCHAR(64) NOT NULL,
+                    image_filename VARCHAR(128) NOT NULL,
+                    button_enabled BOOLEAN NOT NULL,
+                    button_label VARCHAR(80),
+                    button_channel_id BIGINT,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+            """))
+        await legacy_database.create_tables()
+        async with legacy_database.engine.connect() as conn:
+            columns = await conn.run_sync(
+                lambda connection: {column["name"] for column in inspect(connection).get_columns("welcome_settings")}
+            )
+        self.assertIn("accent_color", columns)
+        await legacy_database.close()
 
     def test_image_validation(self) -> None:
         self.assertIsNone(WelcomeService.validate_image("image/png", MAX_WELCOME_IMAGE_BYTES))
@@ -222,6 +283,21 @@ class WelcomeBannerRendererTest(unittest.TestCase):
         self.assertAlmostEqual(background_pixel[0], expected_channel, delta=1)
         self.assertAlmostEqual(background_pixel[1], expected_channel, delta=1)
         self.assertAlmostEqual(background_pixel[2], expected_channel, delta=1)
+
+    def test_uses_accent_border_and_no_white_avatar_outline(self) -> None:
+        accent = (160, 32, 240)
+        result = self.renderer.render(
+            banner_bytes=self._image_bytes(BANNER_SIZE, "black"),
+            avatar_bytes=self._image_bytes((256, 256), "blue"),
+            display_name="Member",
+            server_name="Server",
+            accent_color=accent,
+        )
+
+        rendered = Image.open(BytesIO(result)).convert("RGBA")
+        self.assertEqual(rendered.getpixel((BANNER_SIZE[0] // 2, BORDER_WIDTH // 2))[:3], accent)
+        avatar_edge = rendered.getpixel((60, 95 + 230 // 2))
+        self.assertNotEqual(avatar_edge[:3], (255, 255, 255))
 
     def test_handles_long_names_and_missing_avatar(self) -> None:
         result = self.renderer.render(
