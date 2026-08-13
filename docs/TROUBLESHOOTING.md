@@ -123,3 +123,11 @@ Fix:
 - Use six-digit HEX format, for example `/welcome color color:#A020F0`.
 - The same color is used for the banner border and the Discord embed accent.
 - Existing settings are preserved when an invalid color is rejected.
+
+## Channel name in welcome text is not clickable
+
+- Plain text such as `#rules` is not enough because it does not contain a channel ID.
+- Insert a channel mention in the form `<#123456789012345678>` or paste the URL from Discord `Copy Channel Link`.
+- The bot converts a valid channel of the current server into a clickable `#channel-name` link.
+- Run `/welcome status` to find deleted channels, malformed references, or links to another server.
+- A link does not bypass Discord permissions: members can open only channels they are allowed to view.

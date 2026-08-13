@@ -141,8 +141,9 @@ Warnings:
    - an image up to 5 MB;
    - whether the language button is enabled;
    - the language channel when the button is enabled.
-4. Enter the welcome text in the form. Use `{user}` for the new-member mention and `{server_name}` for the current server name. Discord channel mentions remain clickable.
-5. Run `/welcome preview` and `/welcome status`.
+4. Enter the welcome text in the form. Use `{user}` for the new-member mention and `{server_name}` for the current server name.
+5. For a clickable channel link, insert `<#channel_id>` or paste the value from Discord `Copy Channel Link`. The bot validates the channel and displays it as a `#channel-name` link. Plain text such as `#rules` is not a link.
+6. Run `/welcome preview` and `/welcome status`.
 
 The button is optional. If it is enabled without a selected channel, the bot responds with `Выберите языковой канал`.
 

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from io import BytesIO
 import logging
+import re
 
 import discord
 from sqlalchemy import select
@@ -20,6 +21,10 @@ MAX_AVATAR_BYTES = 2 * 1024 * 1024
 AVATAR_DOWNLOAD_TIMEOUT_SECONDS = 5
 SUPPORTED_WELCOME_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 DEFAULT_WELCOME_ACCENT_COLOR = "5865F2"
+CHANNEL_MENTION_RE = re.compile(r"<#(?P<channel_id>\d+)>")
+CHANNEL_URL_RE = re.compile(
+    r"https://(?:(?:canary|ptb)\.)?discord\.com/channels/(?P<guild_id>\d+)/(?P<channel_id>\d+)"
+)
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,40 @@ class WelcomeService:
             return None
         return normalized
 
+    @classmethod
+    def render_channel_links(cls, value: str, guild: discord.Guild) -> str:
+        def replace_url(match: re.Match[str]) -> str:
+            if int(match.group("guild_id")) != guild.id:
+                return match.group(0)
+            return cls._channel_markdown(guild, int(match.group("channel_id"))) or match.group(0)
+
+        linked = CHANNEL_URL_RE.sub(replace_url, value)
+
+        def replace_mention(match: re.Match[str]) -> str:
+            return cls._channel_markdown(guild, int(match.group("channel_id"))) or match.group(0)
+
+        return CHANNEL_MENTION_RE.sub(replace_mention, linked)
+
+    @classmethod
+    def invalid_channel_references(cls, value: str, guild: discord.Guild) -> list[str]:
+        invalid: list[str] = []
+        for match in CHANNEL_URL_RE.finditer(value):
+            channel_id = int(match.group("channel_id"))
+            if int(match.group("guild_id")) != guild.id or guild.get_channel(channel_id) is None:
+                invalid.append(match.group(0))
+        for match in CHANNEL_MENTION_RE.finditer(value):
+            if guild.get_channel(int(match.group("channel_id"))) is None:
+                invalid.append(match.group(0))
+        return list(dict.fromkeys(invalid))
+
+    @staticmethod
+    def _channel_markdown(guild: discord.Guild, channel_id: int) -> str | None:
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            return None
+        safe_name = str(channel.name).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        return f"[#{safe_name}](https://discord.com/channels/{guild.id}/{channel_id})"
+
     @staticmethod
     def validate_image(content_type: str | None, size: int) -> str | None:
         if content_type not in SUPPORTED_WELCOME_IMAGE_TYPES:
@@ -163,6 +202,7 @@ class WelcomeService:
         content = content.replace(user_marker, mention)
         if user_marker not in safe_template:
             content = f"{mention}\n{content}"
+        content = self.render_channel_links(content, member.guild)
 
         avatar_bytes = await self._read_avatar(member)
         accent_hex = self.normalize_accent_color(setting.accent_color) or DEFAULT_WELCOME_ACCENT_COLOR

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class WelcomeSetupModal(discord.ui.Modal, title="Настройка welcome-сообщения"):
     message = discord.ui.TextInput(
         label="Текст приветствия",
-        placeholder="Добро пожаловать, {user}! Выберите язык ниже.",
+        placeholder="Добро пожаловать, {user}! Правила: <#ID канала>",
         style=discord.TextStyle.paragraph,
         max_length=1900,
         required=True,
@@ -381,6 +381,9 @@ class WelcomeCommands(commands.GroupCog, group_name="welcome", group_description
             interaction.guild.get_channel(setting.button_channel_id or 0), discord.TextChannel
         ):
             issues.append("языковой канал кнопки удалён или недоступен")
+        invalid_links = WelcomeService.invalid_channel_references(setting.message_template, interaction.guild)
+        if invalid_links:
+            issues.append("некорректные ссылки на каналы: " + ", ".join(invalid_links))
 
         state = "включён" if setting.is_enabled else "отключён"
         lines = [f"Welcome **{state}**.", f"Канал: <#{setting.welcome_channel_id}>."]

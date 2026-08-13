@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 
 BANNER_SIZE = (1200, 420)
@@ -85,19 +85,30 @@ class WelcomeBannerRenderer:
         self._draw_heavy_text(draw, (TEXT_LEFT, name_y), name_text, name_font, (255, 255, 255, 255))
         self._draw_heavy_text(draw, (TEXT_LEFT, server_y), server_text, server_font, (225, 230, 238, 255))
 
-        corner_mask = Image.new("L", BANNER_SIZE, 0)
-        ImageDraw.Draw(corner_mask).rounded_rectangle(
+        outer_mask = Image.new("L", BANNER_SIZE, 0)
+        ImageDraw.Draw(outer_mask).rounded_rectangle(
             (0, 0, BANNER_SIZE[0] - 1, BANNER_SIZE[1] - 1),
             radius=CORNER_RADIUS,
             fill=255,
         )
-        canvas.putalpha(corner_mask)
-        ImageDraw.Draw(canvas).rounded_rectangle(
-            (BORDER_WIDTH // 2, BORDER_WIDTH // 2, BANNER_SIZE[0] - 1 - BORDER_WIDTH // 2, BANNER_SIZE[1] - 1 - BORDER_WIDTH // 2),
-            radius=CORNER_RADIUS - BORDER_WIDTH // 2,
-            outline=(*accent_color, 255),
-            width=BORDER_WIDTH,
+        inner_mask = Image.new("L", BANNER_SIZE, 0)
+        ImageDraw.Draw(inner_mask).rounded_rectangle(
+            (
+                BORDER_WIDTH,
+                BORDER_WIDTH,
+                BANNER_SIZE[0] - 1 - BORDER_WIDTH,
+                BANNER_SIZE[1] - 1 - BORDER_WIDTH,
+            ),
+            radius=CORNER_RADIUS - BORDER_WIDTH,
+            fill=255,
         )
+
+        framed_canvas = Image.new("RGBA", BANNER_SIZE, (0, 0, 0, 0))
+        framed_canvas.paste(canvas, (0, 0), inner_mask)
+        border_layer = Image.new("RGBA", BANNER_SIZE, (*accent_color, 255))
+        border_mask = ImageChops.subtract(outer_mask, inner_mask)
+        framed_canvas.paste(border_layer, (0, 0), border_mask)
+        canvas = framed_canvas
 
         output = BytesIO()
         canvas.save(output, format="PNG", optimize=True)

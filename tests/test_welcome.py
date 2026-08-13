@@ -20,9 +20,23 @@ from app.services.welcome_banner_renderer import (
 from app.services.welcome_service import DEFAULT_WELCOME_ACCENT_COLOR, MAX_WELCOME_IMAGE_BYTES, WelcomeService
 
 
+class FakeChannel:
+    def __init__(self, channel_id: int, name: str) -> None:
+        self.id = channel_id
+        self.name = name
+
+
 class FakeGuild:
     id = 123
     name = "Test Community"
+    channels = {
+        20: FakeChannel(20, "choose-language"),
+        30: FakeChannel(30, "rules"),
+        40: FakeChannel(40, "help[desk]"),
+    }
+
+    def get_channel(self, channel_id: int):
+        return self.channels.get(channel_id)
 
 
 class FakeAvatar:
@@ -104,7 +118,7 @@ class WelcomeServiceTest(unittest.IsolatedAsyncioTestCase):
             payload = await service.build_payload(setting, FakeMember())
 
         self.assertIn("<@456>", payload.embed.description)
-        self.assertIn("<#30>", payload.embed.description)
+        self.assertIn("[#rules](https://discord.com/channels/123/30)", payload.embed.description)
         self.assertIn("@\u200beveryone", payload.embed.description)
         self.assertIn("<@\u200b999>", payload.embed.description)
         self.assertEqual(payload.embed.color.value, int(DEFAULT_WELCOME_ACCENT_COLOR, 16))
@@ -118,6 +132,36 @@ class WelcomeServiceTest(unittest.IsolatedAsyncioTestCase):
             include_button=False,
         )
         self.assertIsNone(payload_without_broken_button.view)
+
+    async def test_normalizes_channel_url_and_preserves_invalid_references(self) -> None:
+        async with self.database.session() as session:
+            service = WelcomeService(session)
+            setting = await service.save_setting(
+                guild_id=123,
+                welcome_channel_id=10,
+                message_template=(
+                    "Read https://discord.com/channels/123/40, "
+                    "missing <#999>, external https://discord.com/channels/456/30"
+                ),
+                image_bytes=self._image_bytes((1200, 420), "green"),
+                image_content_type="image/png",
+                image_filename="welcome.png",
+                button_enabled=False,
+                button_label=None,
+                button_channel_id=None,
+            )
+            payload = await service.build_payload(setting, FakeMember())
+
+        self.assertIn(
+            "[#help\\[desk\\]](https://discord.com/channels/123/40)",
+            payload.embed.description,
+        )
+        self.assertIn("<#999>", payload.embed.description)
+        self.assertIn("https://discord.com/channels/456/30", payload.embed.description)
+        self.assertEqual(
+            WelcomeService.invalid_channel_references(setting.message_template, FakeGuild()),
+            ["https://discord.com/channels/456/30", "<#999>"],
+        )
 
     async def test_build_payload_without_button_or_user_placeholder(self) -> None:
         async with self.database.session() as session:
@@ -298,6 +342,22 @@ class WelcomeBannerRendererTest(unittest.TestCase):
         self.assertEqual(rendered.getpixel((BANNER_SIZE[0] // 2, BORDER_WIDTH // 2))[:3], accent)
         avatar_edge = rendered.getpixel((60, 95 + 230 // 2))
         self.assertNotEqual(avatar_edge[:3], (255, 255, 255))
+
+    def test_content_is_clipped_inside_the_colored_frame(self) -> None:
+        accent = (160, 32, 240)
+        result = self.renderer.render(
+            banner_bytes=self._image_bytes(BANNER_SIZE, "white"),
+            avatar_bytes=None,
+            display_name="Member",
+            server_name="Server",
+            accent_color=accent,
+        )
+
+        rendered = Image.open(BytesIO(result)).convert("RGBA")
+        self.assertEqual(rendered.getpixel((0, 0))[3], 0)
+        self.assertEqual(rendered.getpixel((BANNER_SIZE[0] // 2, 1))[:3], accent)
+        self.assertEqual(rendered.getpixel((BANNER_SIZE[0] // 2, BORDER_WIDTH - 1))[:3], accent)
+        self.assertNotEqual(rendered.getpixel((BANNER_SIZE[0] // 2, BORDER_WIDTH + 1))[:3], accent)
 
     def test_handles_long_names_and_missing_avatar(self) -> None:
         result = self.renderer.render(
