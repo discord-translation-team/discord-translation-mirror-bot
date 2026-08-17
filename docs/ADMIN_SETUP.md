@@ -161,3 +161,23 @@ To update an existing setup:
 - `/welcome preview` shows the same personalized rendering used for a real join.
 
 The default color is Discord purple `#5865F2`.
+
+## Reminder setup
+
+Use `/reminder add` and provide `channel`, `repeats`, UTC `time`, `title`, and `message`.
+
+- `date` is required only for `once` and uses `YYYY-MM-DD`.
+- `weekday` is required only for `weekly`.
+- `day_of_month` is required only for `monthly`; missing dates such as February 31 are skipped.
+- `every` defaults to `1`; use `2` for every other day/week/month.
+- `offset_minutes` defaults to `0` and accepts up to `10080`.
+- `start_date` optionally anchors a repeating schedule.
+- `mention_everyone_or_here` can be `none`, `everyone`, or `here`.
+
+Use `/reminder list` to see IDs. `/reminder edit` and `/reminder remove` offer those records through autocomplete; removal requires confirmation. Reminder output is plain text, and an enabled mass mention appears only below the message body.
+
+## Daily cleanup setup
+
+Give the bot `View Channel`, `Read Message History`, and `Manage Messages`, then run `/cleanup add channel:#channel`. The bot deletes all unpinned messages in that selected channel daily at `00:00 UTC`. It keeps pinned messages and posts no notification.
+
+Use `/cleanup list`, `/cleanup edit`, and `/cleanup remove` to manage the selected channels. Removal requires confirmation.

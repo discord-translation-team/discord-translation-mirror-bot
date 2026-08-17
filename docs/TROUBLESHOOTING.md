@@ -131,3 +131,21 @@ Fix:
 - The bot converts a valid channel of the current server into a clickable `#channel-name` link.
 - Run `/welcome status` to find deleted channels, malformed references, or links to another server.
 - A link does not bypass Discord permissions: members can open only channels they are allowed to view.
+
+## Reminder does not send
+
+- Confirm the date and time are UTC and `/reminder list` shows a future next send.
+- Give the bot `View Channel` and `Send Messages` in the selected channel.
+- For `everyone` or `here`, also give the bot `Mention Everyone`.
+- Check Railway logs for `reminder_send_failed`; reconnects and restarts are retried by the scheduler.
+
+## Monthly reminder did not run
+
+A monthly reminder for day 29, 30, or 31 is skipped when that day does not exist in the month. It is not moved to the last day.
+
+## Cleanup does not remove messages
+
+- Confirm the channel appears in `/cleanup list`.
+- Cleanup runs at `00:00 UTC` and removes only unpinned messages.
+- Give the bot `View Channel`, `Read Message History`, and `Manage Messages`.
+- Pinned messages are intentionally preserved, and no completion message is posted.

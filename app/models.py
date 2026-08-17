@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Integer, LargeBinary, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -182,3 +182,51 @@ class GuildUsageMonthly(TimestampMixin, Base):
     input_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     output_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     monthly_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class Reminder(TimestampMixin, Base):
+    __tablename__ = "reminders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    message: Mapped[str] = mapped_column(String(1800), nullable=False)
+    repeats: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_time_utc: Mapped[time] = mapped_column(Time, nullable=False)
+    event_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    every: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    offset_minutes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    mention_mode: Mapped[str] = mapped_column(String(16), default="none", nullable=False)
+    next_fire_at_utc: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+
+
+class ReminderExecution(Base):
+    __tablename__ = "reminder_executions"
+    __table_args__ = (
+        UniqueConstraint("reminder_id", "scheduled_for_utc", name="uq_reminder_execution_occurrence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reminder_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    scheduled_for_utc: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempted_at_utc: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class ChannelCleanupRule(TimestampMixin, Base):
+    __tablename__ = "channel_cleanup_rules"
+    __table_args__ = (
+        UniqueConstraint("guild_id", "channel_id", name="uq_cleanup_rule_guild_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_run_date_utc: Mapped[date | None] = mapped_column(Date, nullable=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -9,11 +10,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.commands.admin import AdminCommands, register_translate_context_menu
+from app.commands.cleanup import CleanupCommands
+from app.commands.reminder import ReminderCommands
 from app.commands.welcome import WelcomeCommands
 from app.config import Settings, configure_logging, load_settings
 from app.database import Database
 from app.services.on_demand_translation_service import OnDemandTranslationService
 from app.services.relay_service import RelayService
+from app.services.scheduled_task_service import ScheduledTaskService
 from app.services.webhook_service import WebhookService
 from app.services.welcome_service import WelcomeService
 from app.translation.base import TranslationProvider
@@ -57,6 +61,8 @@ class TranslationMirrorBot(commands.Bot):
         self.database = Database(settings.database_url)
         self.translation_provider = build_translation_provider(settings)
         self.webhook_service = WebhookService()
+        self.scheduled_task_service = ScheduledTaskService(self.database, self)
+        self.scheduled_task: asyncio.Task | None = None
         self.tree.on_error = self.on_tree_error
 
     async def setup_hook(self) -> None:
@@ -78,10 +84,13 @@ class TranslationMirrorBot(commands.Bot):
             )
         )
         await self.add_cog(WelcomeCommands(self.database))
+        await self.add_cog(ReminderCommands(self.database))
+        await self.add_cog(CleanupCommands(self.database))
         if self.settings.context_menu_translation_enabled:
             register_translate_context_menu(self.tree)
         synced = await self.tree.sync()
         logger.info("slash_commands_synced", extra={"count": len(synced)})
+        self.scheduled_task = asyncio.create_task(self._scheduled_loop(), name="reminder-cleanup-scheduler")
 
     async def on_tree_error(
         self,
@@ -106,8 +115,25 @@ class TranslationMirrorBot(commands.Bot):
             await interaction.response.send_message(message, ephemeral=True)
 
     async def close(self) -> None:
+        if self.scheduled_task is not None:
+            self.scheduled_task.cancel()
+            try:
+                await self.scheduled_task
+            except asyncio.CancelledError:
+                pass
         await self.database.close()
         await super().close()
+
+    async def _scheduled_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                await self.scheduled_task_service.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("scheduled_task_tick_failed")
+            await asyncio.sleep(60)
 
     async def on_ready(self) -> None:
         logger.info(
