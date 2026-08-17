@@ -178,6 +178,6 @@ Use `/reminder list` to see IDs. `/reminder edit` and `/reminder remove` offer t
 
 ## Daily cleanup setup
 
-Give the bot `View Channel`, `Read Message History`, and `Manage Messages`, then run `/cleanup add channel:#channel`. The bot deletes all unpinned messages in that selected channel daily at `00:00 UTC`. It keeps pinned messages and posts no notification.
+Give the bot `View Channel`, `Read Message History`, and `Manage Messages`, then run `/cleanup add channel:#channel time:HH:MM`. Time is UTC and defaults to `00:00`. Each selected channel can use its own daily cleanup time. The bot deletes all unpinned messages, keeps pinned messages, and posts no notification.
 
-Use `/cleanup list`, `/cleanup edit`, and `/cleanup remove` to manage the selected channels. Removal requires confirmation.
+Use `/cleanup list` to see each channel and its UTC time. `/cleanup edit` can change the channel, the time, or both. `/cleanup remove` requires confirmation.

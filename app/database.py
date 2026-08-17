@@ -43,6 +43,12 @@ class Database:
             "welcome_settings": [
                 ("accent_color", "ALTER TABLE welcome_settings ADD COLUMN accent_color VARCHAR(6) NOT NULL DEFAULT '5865F2'"),
             ],
+            "channel_cleanup_rules": [
+                (
+                    "cleanup_time_utc",
+                    "ALTER TABLE channel_cleanup_rules ADD COLUMN cleanup_time_utc TIME NOT NULL DEFAULT '00:00:00'",
+                ),
+            ],
         }
 
         for table_name, table_migrations in migrations.items():

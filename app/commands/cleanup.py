@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.database import Database
-from app.services.cleanup_service import CleanupService, CleanupValidationError
+from app.services.cleanup_service import CleanupService, CleanupValidationError, parse_cleanup_time
 
 
 class CleanupRemoveView(discord.ui.View):
@@ -53,7 +53,7 @@ class CleanupCommands(commands.GroupCog, group_name="cleanup", group_description
             return False
         return True
 
-    @app_commands.command(name="list", description="List channels cleaned daily at 00:00 UTC")
+    @app_commands.command(name="list", description="List channels and their daily cleanup time")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def list_rules(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
@@ -64,35 +64,51 @@ class CleanupCommands(commands.GroupCog, group_name="cleanup", group_description
         if not rules:
             await interaction.response.send_message("No cleanup rules configured.", ephemeral=True)
             return
-        lines = [f"`{rule.id}` · <#{rule.channel_id}> · daily 00:00 UTC · keeps pinned messages" for rule in rules]
+        lines = [
+            f"`{rule.id}` · <#{rule.channel_id}> · daily {rule.cleanup_time_utc.strftime('%H:%M')} UTC"
+            " · keeps pinned messages"
+            for rule in rules
+        ]
         await interaction.response.send_message("**CLEANUP RULES**\n" + "\n".join(lines), ephemeral=True)
 
-    @app_commands.command(name="add", description="Clean all unpinned messages in a channel daily at 00:00 UTC")
+    @app_commands.command(name="add", description="Schedule daily cleanup of all unpinned channel messages")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def add(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+    @app_commands.describe(time="Daily cleanup time as HH:MM (UTC)")
+    async def add(self, interaction: discord.Interaction, channel: discord.TextChannel, time: str = "00:00") -> None:
         if not await self._validate_channel(interaction, channel):
             return
         assert interaction.guild is not None
         try:
+            cleanup_time = parse_cleanup_time(time)
             async with self.database.session() as session:
                 rule = await CleanupService(session).add(
                     guild_id=interaction.guild.id,
                     channel_id=channel.id,
                     created_by_user_id=interaction.user.id,
+                    cleanup_time_utc=cleanup_time,
                     current_date_utc=datetime.now(UTC).date(),
                 )
         except CleanupValidationError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         await interaction.response.send_message(
-            f"Added cleanup rule `{rule.id}` for {channel.mention}. It runs daily at 00:00 UTC and keeps pinned messages.",
+            f"Added cleanup rule `{rule.id}` for {channel.mention}. It runs daily at "
+            f"{rule.cleanup_time_utc.strftime('%H:%M')} UTC and keeps pinned messages.",
             ephemeral=True,
         )
 
-    @app_commands.command(name="edit", description="Change the channel for a cleanup rule")
+    @app_commands.command(name="edit", description="Change the channel or UTC time for a cleanup rule")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def edit(self, interaction: discord.Interaction, rule_id: int, channel: discord.TextChannel) -> None:
-        if interaction.guild is None or not await self._validate_channel(interaction, channel):
+    @app_commands.describe(time="New daily cleanup time as HH:MM (UTC)")
+    async def edit(
+        self,
+        interaction: discord.Interaction,
+        rule_id: int,
+        channel: discord.TextChannel | None = None,
+        time: str | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("This command is only available in a server.", ephemeral=True)
             return
         async with self.database.session() as session:
             service = CleanupService(session)
@@ -100,12 +116,27 @@ class CleanupCommands(commands.GroupCog, group_name="cleanup", group_description
             if rule is None:
                 await interaction.response.send_message("Cleanup rule not found.", ephemeral=True)
                 return
+            selected_channel = channel or interaction.guild.get_channel(rule.channel_id)
+            if not isinstance(selected_channel, discord.TextChannel):
+                await interaction.response.send_message("Choose an available text channel from this server.", ephemeral=True)
+                return
+            if not await self._validate_channel(interaction, selected_channel):
+                return
             try:
-                rule = await service.update_channel(rule, channel.id)
+                cleanup_time = parse_cleanup_time(time) if time is not None else rule.cleanup_time_utc
+                rule = await service.update(
+                    rule,
+                    channel_id=selected_channel.id,
+                    cleanup_time_utc=cleanup_time,
+                )
             except CleanupValidationError as exc:
                 await interaction.response.send_message(str(exc), ephemeral=True)
                 return
-        await interaction.response.send_message(f"Cleanup rule `{rule.id}` now targets {channel.mention}.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Cleanup rule `{rule.id}` now targets {selected_channel.mention} at "
+            f"{rule.cleanup_time_utc.strftime('%H:%M')} UTC.",
+            ephemeral=True,
+        )
 
     @edit.autocomplete("rule_id")
     async def edit_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:

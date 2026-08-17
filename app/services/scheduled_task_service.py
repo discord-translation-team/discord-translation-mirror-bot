@@ -127,8 +127,11 @@ class ScheduledTaskService:
         async with self.database.session() as session:
             result = await session.execute(
                 select(ChannelCleanupRule).where(
-                    (ChannelCleanupRule.last_run_date_utc.is_(None))
-                    | (ChannelCleanupRule.last_run_date_utc < current_date)
+                    (
+                        (ChannelCleanupRule.last_run_date_utc.is_(None))
+                        | (ChannelCleanupRule.last_run_date_utc < current_date)
+                    ),
+                    ChannelCleanupRule.cleanup_time_utc <= now.time(),
                 )
             )
             rule_ids = [rule.id for rule in result.scalars()]
@@ -136,7 +139,11 @@ class ScheduledTaskService:
         for rule_id in rule_ids:
             async with self.database.session() as session:
                 rule = await session.get(ChannelCleanupRule, rule_id)
-                if rule is None or rule.last_run_date_utc == current_date:
+                if (
+                    rule is None
+                    or rule.last_run_date_utc == current_date
+                    or rule.cleanup_time_utc > now.time()
+                ):
                     continue
                 guild = self.bot.get_guild(rule.guild_id)
                 channel = guild.get_channel(rule.channel_id) if guild else None

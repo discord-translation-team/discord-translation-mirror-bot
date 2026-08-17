@@ -4,10 +4,12 @@ from datetime import date, datetime, time
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+from sqlalchemy import inspect, text
 
 from app.database import Database
-from app.services.cleanup_service import CleanupService, CleanupValidationError
+from app.services.cleanup_service import CleanupService, CleanupValidationError, parse_cleanup_time
 from app.services.reminder_service import (
     ReminderInput,
     ReminderService,
@@ -175,14 +177,17 @@ class ReminderPersistenceTest(unittest.IsolatedAsyncioTestCase):
                 guild_id=123,
                 channel_id=10,
                 created_by_user_id=5,
+                cleanup_time_utc=time(17, 30),
                 current_date_utc=date(2026, 8, 17),
             )
             self.assertEqual(first.last_run_date_utc, date(2026, 8, 17))
+            self.assertEqual(first.cleanup_time_utc, time(17, 30))
             with self.assertRaises(CleanupValidationError):
                 await service.add(
                     guild_id=123,
                     channel_id=10,
                     created_by_user_id=5,
+                    cleanup_time_utc=time(17, 30),
                     current_date_utc=date(2026, 8, 17),
                 )
             self.assertEqual(len(await service.list_for_guild(123)), 1)
@@ -212,6 +217,66 @@ class ReminderPersistenceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cleanup_purge_keeps_pinned_messages(self) -> None:
         self.assertEqual(await CleanupService.purge_channel(FakePurgeChannel()), 2)
+
+    async def test_cleanup_runs_only_after_configured_utc_time(self) -> None:
+        async with self.database.session() as session:
+            await CleanupService(session).add(
+                guild_id=123,
+                channel_id=456,
+                created_by_user_id=5,
+                cleanup_time_utc=time(14, 30),
+                current_date_utc=date(2026, 8, 17),
+            )
+
+        channel = FakeScheduledChannel()
+        scheduler = ScheduledTaskService(self.database, FakeScheduledBot(channel))
+        purge = AsyncMock(return_value=3)
+        with (
+            patch("app.services.scheduled_task_service.discord.TextChannel", FakeScheduledChannel),
+            patch("app.services.scheduled_task_service.CleanupService.purge_channel", purge),
+        ):
+            await scheduler.run_once(now=datetime(2026, 8, 18, 14, 29))
+            purge.assert_not_awaited()
+            await scheduler.run_once(now=datetime(2026, 8, 18, 14, 30))
+            purge.assert_awaited_once_with(channel)
+
+    def test_cleanup_time_requires_hh_mm(self) -> None:
+        self.assertEqual(parse_cleanup_time("09:05"), time(9, 5))
+        with self.assertRaises(CleanupValidationError):
+            parse_cleanup_time("9am")
+
+    async def test_existing_cleanup_table_gets_default_time_column(self) -> None:
+        legacy_path = Path(self.temp_dir.name) / "legacy-cleanup.db"
+        database = Database(f"sqlite+aiosqlite:///{legacy_path.as_posix()}")
+        async with database.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE channel_cleanup_rules ("
+                    "id INTEGER PRIMARY KEY, guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL, "
+                    "created_by_user_id BIGINT NOT NULL, last_run_date_utc DATE, "
+                    "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+                )
+            )
+        await database.create_tables()
+        async with database.engine.begin() as connection:
+            columns = await connection.run_sync(
+                lambda sync_connection: {
+                    column["name"]: column for column in inspect(sync_connection).get_columns("channel_cleanup_rules")
+                }
+            )
+            row = (
+                await connection.execute(
+                    text(
+                        "INSERT INTO channel_cleanup_rules "
+                        "(guild_id, channel_id, created_by_user_id, last_run_date_utc, created_at, updated_at) "
+                        "VALUES (1, 2, 3, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+                        "RETURNING cleanup_time_utc"
+                    )
+                )
+            ).one()
+        self.assertIn("cleanup_time_utc", columns)
+        self.assertEqual(str(row[0]), "00:00:00")
+        await database.close()
 
 
 if __name__ == "__main__":

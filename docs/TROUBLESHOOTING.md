@@ -146,6 +146,6 @@ A monthly reminder for day 29, 30, or 31 is skipped when that day does not exist
 ## Cleanup does not remove messages
 
 - Confirm the channel appears in `/cleanup list`.
-- Cleanup runs at `00:00 UTC` and removes only unpinned messages.
+- Run `/cleanup list` and verify the configured `HH:MM UTC` time; `00:00` is only the default.
 - Give the bot `View Channel`, `Read Message History`, and `Manage Messages`.
 - Pinned messages are intentionally preserved, and no completion message is posted.

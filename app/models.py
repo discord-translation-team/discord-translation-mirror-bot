@@ -229,4 +229,5 @@ class ChannelCleanupRule(TimestampMixin, Base):
     guild_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cleanup_time_utc: Mapped[time] = mapped_column(Time, default=time(0, 0), nullable=False)
     last_run_date_utc: Mapped[date | None] = mapped_column(Date, nullable=True)
