@@ -29,6 +29,16 @@ def utc_timestamp(value: datetime) -> int:
     return int(value.replace(tzinfo=UTC).timestamp())
 
 
+def parse_reminder_id(value: str) -> int:
+    try:
+        reminder_id = int(value.strip())
+    except (TypeError, ValueError) as exc:
+        raise ReminderValidationError("Choose a reminder from the list or enter its numeric ID.") from exc
+    if reminder_id <= 0:
+        raise ReminderValidationError("Choose a reminder from the list or enter its numeric ID.")
+    return reminder_id
+
+
 class ReminderRemoveView(discord.ui.View):
     def __init__(self, database: Database, guild_id: int, reminder_id: int, owner_id: int) -> None:
         super().__init__(timeout=60)
@@ -213,7 +223,7 @@ class ReminderCommands(commands.GroupCog, group_name="reminder", group_descripti
     async def edit(
         self,
         interaction: discord.Interaction,
-        reminder_id: int,
+        reminder_id: str,
         channel: discord.TextChannel | None = None,
         repeats: Repeats | None = None,
         time: str | None = None,
@@ -230,9 +240,14 @@ class ReminderCommands(commands.GroupCog, group_name="reminder", group_descripti
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This command is only available in a server.", ephemeral=True)
             return
+        try:
+            parsed_reminder_id = parse_reminder_id(reminder_id)
+        except ReminderValidationError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         async with self.database.session() as session:
             service = ReminderService(session)
-            current = await service.get(interaction.guild.id, reminder_id)
+            current = await service.get(interaction.guild.id, parsed_reminder_id)
             if current is None:
                 await interaction.response.send_message("Reminder not found.", ephemeral=True)
                 return
@@ -291,17 +306,22 @@ class ReminderCommands(commands.GroupCog, group_name="reminder", group_descripti
         )
 
     @edit.autocomplete("reminder_id")
-    async def edit_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
+    async def edit_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self._autocomplete(interaction, current)
 
     @app_commands.command(name="remove", description="Remove a reminder")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def remove(self, interaction: discord.Interaction, reminder_id: int) -> None:
+    async def remove(self, interaction: discord.Interaction, reminder_id: str) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("This command is only available in a server.", ephemeral=True)
             return
+        try:
+            parsed_reminder_id = parse_reminder_id(reminder_id)
+        except ReminderValidationError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         async with self.database.session() as session:
-            reminder = await ReminderService(session).get(interaction.guild.id, reminder_id)
+            reminder = await ReminderService(session).get(interaction.guild.id, parsed_reminder_id)
         if reminder is None:
             await interaction.response.send_message("Reminder not found.", ephemeral=True)
             return
@@ -313,14 +333,14 @@ class ReminderCommands(commands.GroupCog, group_name="reminder", group_descripti
         )
 
     @remove.autocomplete("reminder_id")
-    async def remove_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
+    async def remove_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self._autocomplete(interaction, current)
 
-    async def _autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[int]]:
+    async def _autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         if interaction.guild is None:
             return []
         async with self.database.session() as session:
             reminders = await ReminderService(session).list_for_guild(interaction.guild.id)
         query = current.casefold().strip()
         matches = [item for item in reminders if not query or query in str(item.id) or query in item.title.casefold()]
-        return [app_commands.Choice(name=autocomplete_label(item), value=item.id) for item in matches[:25]]
+        return [app_commands.Choice(name=autocomplete_label(item), value=str(item.id)) for item in matches[:25]]

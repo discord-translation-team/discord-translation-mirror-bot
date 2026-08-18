@@ -27,6 +27,7 @@ WEEKDAYS = {
     "saturday": 5,
     "sunday": 6,
 }
+CUSTOM_EMOJI_RE = re.compile(r"<a?:[A-Za-z0-9_]{2,32}:\d+>")
 
 
 class ReminderValidationError(ValueError):
@@ -177,7 +178,17 @@ def validate_input(value: ReminderInput, *, now: datetime) -> None:
 
 
 def safe_text(value: str) -> str:
-    return sanitize_mentions(discord.utils.remove_markdown(value.strip()))
+    custom_emojis: list[str] = []
+
+    def protect_custom_emoji(match: re.Match[str]) -> str:
+        custom_emojis.append(match.group(0))
+        return f"\uE000{len(custom_emojis) - 1}\uE001"
+
+    protected = CUSTOM_EMOJI_RE.sub(protect_custom_emoji, value.strip())
+    cleaned = discord.utils.remove_markdown(protected)
+    for index, emoji in enumerate(custom_emojis):
+        cleaned = cleaned.replace(f"\uE000{index}\uE001", emoji)
+    return sanitize_mentions(cleaned)
 
 
 def build_message_content(reminder: Reminder) -> tuple[str, discord.AllowedMentions]:

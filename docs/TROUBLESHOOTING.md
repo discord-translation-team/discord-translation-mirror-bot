@@ -139,6 +139,8 @@ Fix:
 - For `everyone` or `here`, also give the bot `Mention Everyone`.
 - Check Railway logs for `reminder_send_failed`; reconnects and restarts are retried by the scheduler.
 
+If `/reminder edit` asks for a numeric ID after autocomplete, confirm the bot is running the current release and reselect the reminder from the refreshed list. The selected autocomplete entry should be accepted directly. Standard and custom Discord emoji can be used in both reminder title and message; a deleted or inaccessible custom emoji may not render for Discord users.
+
 ## Monthly reminder did not run
 
 A monthly reminder for day 29, 30, or 31 is skipped when that day does not exist in the month. It is not moved to the last day.

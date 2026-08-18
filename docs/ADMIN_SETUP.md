@@ -176,6 +176,8 @@ Use `/reminder add` and provide `channel`, `repeats`, UTC `time`, `title`, and `
 
 Use `/reminder list` to see IDs. `/reminder edit` and `/reminder remove` offer those records through autocomplete; removal requires confirmation. Reminder output is plain text, and an enabled mass mention appears only below the message body.
 
+Standard Unicode emoji and server custom emoji are supported in both `title` and `message`, including animated custom emoji. For edit or removal, click the desired reminder in autocomplete; copying its numeric ID manually is optional.
+
 ## Daily cleanup setup
 
 Give the bot `View Channel`, `Read Message History`, and `Manage Messages`, then run `/cleanup add channel:#channel time:HH:MM`. Time is UTC and defaults to `00:00`. Each selected channel can use its own daily cleanup time. The bot deletes all unpinned messages, keeps pinned messages, and posts no notification.

@@ -345,6 +345,6 @@ Administrators with `Manage Server` can manage server-scoped reminders with:
 - `/reminder edit`
 - `/reminder remove`
 
-Times and dates use UTC. `repeats` supports `once`, `daily`, `weekly`, and `monthly`; `every` changes the cadence, and `offset_minutes` sends before the event. The optional `everyone` or `here` ping is appended below the message body. Reminder and cleanup IDs are available through Discord autocomplete.
+Times and dates use UTC. `repeats` supports `once`, `daily`, `weekly`, and `monthly`; `every` changes the cadence, and `offset_minutes` sends before the event. The optional `everyone` or `here` ping is appended below the message body. Standard Unicode and custom Discord emoji are preserved in reminder titles and messages. Reminder and cleanup IDs are available through Discord autocomplete; reminder edit and removal accept the selected entry directly.
 
 Daily channel cleanup is configured with `/cleanup add/list/edit/remove`. Each rule has its own `HH:MM UTC` time (`00:00` by default). The bot removes all unpinned messages from explicitly configured channels and posts no cleanup notification. It needs `View Channel`, `Read Message History`, and `Manage Messages` there.

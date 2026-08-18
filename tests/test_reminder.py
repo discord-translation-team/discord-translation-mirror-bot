@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import inspect, text
 
 from app.database import Database
+from app.commands.reminder import ReminderCommands, parse_reminder_id
 from app.services.cleanup_service import CleanupService, CleanupValidationError, parse_cleanup_time
 from app.services.reminder_service import (
     ReminderInput,
@@ -82,6 +84,12 @@ def reminder_input(**overrides) -> ReminderInput:
 
 
 class ReminderScheduleTest(unittest.TestCase):
+    def test_reminder_id_accepts_autocomplete_string_and_rejects_invalid_value(self) -> None:
+        self.assertEqual(parse_reminder_id(" 42 "), 42)
+        for value in ("", "Daily reset", "0", "-1"):
+            with self.subTest(value=value), self.assertRaises(ReminderValidationError):
+                parse_reminder_id(value)
+
     def test_parsers_require_explicit_utc_formats(self) -> None:
         self.assertEqual(parse_utc_time("17:50"), time(17, 50))
         self.assertEqual(parse_iso_date("2026-08-17", "Date"), date(2026, 8, 17))
@@ -150,6 +158,17 @@ class ReminderPersistenceTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(await service.remove(123, reminder_id))
             self.assertIsNone(await service.get(123, reminder_id))
 
+    async def test_autocomplete_returns_string_id_for_discord_text_option(self) -> None:
+        async with self.database.session() as session:
+            reminder = await ReminderService(session).add(
+                reminder_input(title="Clickable edit"),
+                now=datetime(2026, 1, 1, 0, 0),
+            )
+        interaction = SimpleNamespace(guild=SimpleNamespace(id=123))
+        choices = await ReminderCommands(self.database)._autocomplete(interaction, "Clickable")
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0].value, str(reminder.id))
+
     async def test_message_mentions_only_use_selected_bottom_line(self) -> None:
         async with self.database.session() as session:
             reminder = await ReminderService(session).add(
@@ -169,6 +188,23 @@ class ReminderPersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(allowed.everyone)
         self.assertFalse(allowed.users)
         self.assertFalse(allowed.roles)
+
+    async def test_message_preserves_unicode_and_custom_emojis(self) -> None:
+        async with self.database.session() as session:
+            reminder = await ReminderService(session).add(
+                reminder_input(
+                    title="Launch 🚀 <:party_parrot:123456789012345678>",
+                    message="Team 👨‍👩‍👧‍👦 👍🏽 <a:dance_party:987654321098765432>",
+                ),
+                now=datetime(2026, 1, 1, 0, 0),
+            )
+            content, allowed = build_message_content(reminder)
+        self.assertIn("🚀", content)
+        self.assertIn("👨‍👩‍👧‍👦", content)
+        self.assertIn("👍🏽", content)
+        self.assertIn("<:party_parrot:123456789012345678>", content)
+        self.assertIn("<a:dance_party:987654321098765432>", content)
+        self.assertFalse(allowed.everyone)
 
     async def test_cleanup_rules_are_unique_per_channel_and_guild_scoped(self) -> None:
         async with self.database.session() as session:
